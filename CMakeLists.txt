@@ -70,6 +70,8 @@ OPTION(TORCH_BUILD_TESTS "Build and register the test suites" ON)
 IF(TORCH_BUILD_TESTS)
   ENABLE_TESTING()
 
+  ADD_SUBDIRECTORY(test/c)   # TH C-level tests: th.<suite>
+
   IF(TH_HAS_LAPACK)
     SET(_has_lapack 1)
   ELSE()
