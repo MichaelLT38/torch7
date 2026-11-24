@@ -66,6 +66,11 @@ ADD_CUSTOM_TARGET(torch_stage ALL
 ######################################################################
 # Tests (ctest)
 ######################################################################
+OPTION(TORCH_BUILD_BENCH "Build the th_bench micro-benchmark (bench/)" ON)
+IF(TORCH_BUILD_BENCH)
+  ADD_SUBDIRECTORY(bench)
+ENDIF()
+
 OPTION(TORCH_BUILD_TESTS "Build and register the test suites" ON)
 IF(TORCH_BUILD_TESTS)
   ENABLE_TESTING()
