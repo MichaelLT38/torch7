@@ -1,11 +1,12 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.16)
 
-# avoid some cmake warnings
-IF(POLICY CMP0026)
- CMAKE_POLICY(SET CMP0026 OLD)
+# TH can be built standalone (cmake -S lib/TH) or as part of Torch.
+IF(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(TH LANGUAGES C)
 ENDIF()
 
 SET(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/TorchCompiler.cmake")  # GCC >= 13, C11, OpenMP
 SET(CMAKE_LIBRARY_PATH /usr/lib/x86_64-linux-gnu/ ${CMAKE_LIBRARY_PATH})
 
 # Can be compiled standalone
@@ -23,21 +24,9 @@ ENDIF()
 ######################################################################
 ###### macros section
 #####################################################################
-IF(NOT ADD_TORCH_LIBRARY)
+IF(NOT COMMAND ADD_TORCH_LIBRARY)
 MACRO(ADD_TORCH_LIBRARY package type src)
-  IF ("${type}" STREQUAL "STATIC")
-    if ("${src}" MATCHES "cu$" OR "${src}" MATCHES "cu;")
-      CUDA_ADD_LIBRARY(${package} STATIC ${src})
-    else()
-      ADD_LIBRARY(${package} STATIC ${src})
-    endif()
-  ELSE()
-    if ("${src}" MATCHES "cu$" OR "${src}" MATCHES "cu;")
-      CUDA_ADD_LIBRARY(${package} ${type} ${src})
-    else()
-      ADD_LIBRARY(${package} ${type} ${src})
-    endif()
-  ENDIF()
+  ADD_LIBRARY(${package} ${type} ${src})
 ENDMACRO()
 ENDIF()
 
@@ -45,52 +34,7 @@ ENDIF()
 ##### flags section
 ######################################################################
 
-IF(MSVC)
-  # MSVC now supports C99 since VS2013/VS2015, however the standard version switch is not provided yet
-  # SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /std:c99")
-ELSE(MSVC)
-  # enable gnu99 and not c99 because we use
-  # gnu extensions like posix_memalign
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
-ENDIF(MSVC)
-
-IF(MSVC)
-  ADD_DEFINITIONS(-D_CRT_SECURE_NO_DEPRECATE=1)  # respect the standard
-ENDIF(MSVC)
-
-IF(UNIX)
-  # prevent Unknown CMake command "check_function_exists".
-  INCLUDE(CheckFunctionExists)
-ENDIF(UNIX)
-
-# OpenMP support?
-SET(WITH_OPENMP ON CACHE BOOL "OpenMP support if available?")
-IF (APPLE AND CMAKE_COMPILER_IS_GNUCC)
-  EXEC_PROGRAM (uname ARGS -v  OUTPUT_VARIABLE DARWIN_VERSION)
-  STRING (REGEX MATCH "[0-9]+" DARWIN_VERSION ${DARWIN_VERSION})
-  MESSAGE (STATUS "MAC OS Darwin Version: ${DARWIN_VERSION}")
-  IF (DARWIN_VERSION GREATER 9)
-    SET(APPLE_OPENMP_SUCKS 1)
-  ENDIF (DARWIN_VERSION GREATER 9)
-  EXECUTE_PROCESS (COMMAND ${CMAKE_C_COMPILER} -dumpversion
-    OUTPUT_VARIABLE GCC_VERSION)
-  IF (APPLE_OPENMP_SUCKS AND GCC_VERSION VERSION_LESS 4.6.2)
-    MESSAGE(STATUS "Warning: Disabling OpenMP (unstable with this version of GCC)")
-    MESSAGE(STATUS " Install GCC >= 4.6.2 or change your OS to enable OpenMP")
-    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unknown-pragmas")
-    SET(WITH_OPENMP OFF CACHE BOOL "OpenMP support if available?" FORCE)
-  ENDIF ()
-ENDIF ()
-
-IF (WITH_OPENMP)
-  FIND_PACKAGE(OpenMP)
-  IF(OPENMP_FOUND)
-    MESSAGE(STATUS "Compiling with OpenMP support")
-    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-    SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-  ENDIF(OPENMP_FOUND)
-ENDIF (WITH_OPENMP)
+INCLUDE(CheckFunctionExists)
 
 # ARM specific flags
 FIND_PACKAGE(ARM)
@@ -110,40 +54,7 @@ IF (CORTEXA9_FOUND)
   SET(CMAKE_C_FLAGS "-mcpu=cortex-a9 ${CMAKE_C_FLAGS}")
 ENDIF (CORTEXA9_FOUND)
 
-INCLUDE (CheckIncludeFile)
 INCLUDE (CheckCSourceCompiles)
-CHECK_INCLUDE_FILE(cpuid.h HAVE_CPUID_H)
-# Check for a cpuid intrinsic
-IF(HAVE_CPUID_H)
-    CHECK_C_SOURCE_COMPILES("#include <cpuid.h>
-        int main()
-        {
-            unsigned int eax, ebx, ecx, edx;
-            return __get_cpuid(0, &eax, &ebx, &ecx, &edx);
-        }" HAVE_GCC_GET_CPUID)
-ENDIF()
-IF(HAVE_GCC_GET_CPUID)
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DHAVE_GCC_GET_CPUID")
-ENDIF(HAVE_GCC_GET_CPUID)
-
-CHECK_C_SOURCE_COMPILES("#include <stdint.h>
-    static inline void cpuid(uint32_t *eax, uint32_t *ebx,
-    			 uint32_t *ecx, uint32_t *edx)
-    {
-      uint32_t a = *eax, b, c = *ecx, d;
-      asm volatile ( \"cpuid\" : \"+a\"(a), \"=b\"(b), \"+c\"(c), \"=d\"(d) );
-      *eax = a; *ebx = b; *ecx = c; *edx = d;
-    }
-    int main() {
-      uint32_t a,b,c,d;
-      cpuid(&a, &b, &c, &d);
-      return 0;
-    }" NO_GCC_EBX_FPIC_BUG)
-
-IF(NOT NO_GCC_EBX_FPIC_BUG)
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUSE_GCC_GET_CPUID")
-ENDIF(NOT NO_GCC_EBX_FPIC_BUG)
-
 
 FIND_PACKAGE(SSE) # checks SSE, AVX and AVX2
 IF(C_SSE2_FOUND)
@@ -166,48 +77,6 @@ IF(C_AVX2_FOUND)
   SET(CMAKE_C_FLAGS "-DUSE_AVX2 ${CMAKE_C_FLAGS}")
 ENDIF(C_AVX2_FOUND)
 
-CHECK_C_SOURCE_RUNS("
-#include <stdatomic.h>
-int main()
-{
-  int a;
-  int oa;
-  atomic_store(&a, 1);
-  atomic_fetch_add(&a, 1);
-  oa = atomic_load(&a);
-  if(!atomic_compare_exchange_strong(&a, &oa, 3))
-    return -1;
-  return 0;
-}
-" HAS_C11_ATOMICS)
-
-IF(NOT HAS_C11_ATOMICS)
-  CHECK_C_SOURCE_RUNS("
-#include <intrin.h>
-int main()
-{
-  long a;
-  _InterlockedExchange(&a, 1);
-  _InterlockedExchangeAdd(&a, 1);
-  if(_InterlockedCompareExchange(&a, 3, 2) != 2)
-    return -1;
-  return 0;
-}
-" HAS_MSC_ATOMICS)
-
-  CHECK_C_SOURCE_RUNS("
-int main()
-{
-  int a;
-  __sync_lock_test_and_set(&a, 1);
-  __sync_fetch_and_add(&a, 1);
-  if(!__sync_bool_compare_and_swap(&a, 2, 3))
-    return -1;
-  return 0;
-}
-" HAS_GCC_ATOMICS)
-ENDIF()
-
 #######################################################################
 ##### sources section
 ######################################################################
@@ -220,37 +89,24 @@ ENDIF(C_AVX2_FOUND OR C_AVX_FOUND OR C_SSE4_2_FOUND OR C_SSE4_1_FOUND)
 # IF SSE4 FOUND
 IF(C_SSE4_1_FOUND AND C_SSE4_2_FOUND)
   SET(CMAKE_C_FLAGS "${C_SSE4_1_FLAGS} -DUSE_SSE4_1 ${C_SSE4_2_FLAGS} -DUSE_SSE4_2 ${CMAKE_C_FLAGS}")
-  IF(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_sse.c PROPERTIES COMPILE_FLAGS "/Ox /fp:fast")
-  ELSE(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_sse.c PROPERTIES COMPILE_FLAGS "-O3 -ffast-math")
-  ENDIF(MSVC)
+  SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_sse.c PROPERTIES COMPILE_FLAGS "-O3 -ffast-math")
   SET(simd ${simd} generic/simd/convolve5x5_sse.c)
 ENDIF(C_SSE4_1_FOUND AND C_SSE4_2_FOUND)
 
 # IF AVX FOUND
 IF(C_AVX_FOUND)
-  IF(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_avx.c PROPERTIES COMPILE_FLAGS "/Ox /fp:fast ${C_AVX_FLAGS}")
-    SET_SOURCE_FILES_PROPERTIES(vector/AVX.c PROPERTIES COMPILE_FLAGS "/Ox /arch:AVX ${C_AVX_FLAGS}")
-  ELSE(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_avx.c PROPERTIES COMPILE_FLAGS "-O3 -ffast-math ${C_AVX_FLAGS}")
-    SET_SOURCE_FILES_PROPERTIES(vector/AVX.c PROPERTIES COMPILE_FLAGS "-O3 ${C_AVX_FLAGS}")
-  ENDIF(MSVC)
+  SET_SOURCE_FILES_PROPERTIES(generic/simd/convolve5x5_avx.c PROPERTIES COMPILE_FLAGS "-O3 -ffast-math ${C_AVX_FLAGS}")
+  SET_SOURCE_FILES_PROPERTIES(vector/AVX.c PROPERTIES COMPILE_FLAGS "-O3 ${C_AVX_FLAGS}")
   SET(simd ${simd} vector/AVX.c generic/simd/convolve5x5_avx.c)
 ENDIF(C_AVX_FOUND)
 
 IF(C_AVX2_FOUND)
-  IF(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(vector/AVX2.c PROPERTIES COMPILE_FLAGS "/Ox /arch:AVX2 ${C_AVX2_FLAGS}")
-  ELSE(MSVC)
-    SET_SOURCE_FILES_PROPERTIES(vector/AVX2.c PROPERTIES COMPILE_FLAGS "-O3 ${C_AVX2_FLAGS}")
-  ENDIF(MSVC)
+  SET_SOURCE_FILES_PROPERTIES(vector/AVX2.c PROPERTIES COMPILE_FLAGS "-O3 ${C_AVX2_FLAGS}")
   SET(simd ${simd} vector/AVX2.c)
 ENDIF(C_AVX2_FOUND)
 
 SET(hdr
-  THGeneral.h THHalf.h THAllocator.h THSize.h THStorage.h THTensor.h THTensorApply.h THBlas.h THMath.h
+  THHalf.h THAllocator.h THSize.h THStorage.h THTensor.h THTensorApply.h THBlas.h THMath.h
   THLapack.h THLogAdd.h THRandom.h THVector.h THAtomic.h )
 
 SET(src
@@ -281,24 +137,7 @@ SET_TARGET_PROPERTIES(TH PROPERTIES
   VERSION   ${TH_SO_VERSION}
   SOVERSION ${TH_SO_VERSION})
 
-IF(HAS_C11_ATOMICS)
-  ADD_DEFINITIONS(-DUSE_C11_ATOMICS=1)
-  MESSAGE(STATUS "Atomics: using C11 intrinsics")
-ELSEIF(HAS_MSC_ATOMICS)
-  ADD_DEFINITIONS(-DUSE_MSC_ATOMICS=1)
-  MESSAGE(STATUS "Atomics: using MSVC intrinsics")
-ELSEIF(HAS_GCC_ATOMICS)
-  ADD_DEFINITIONS(-DUSE_GCC_ATOMICS=1)
-    MESSAGE(STATUS "Atomics: using GCC intrinsics")
-ELSE()
-  SET(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-  FIND_PACKAGE(Threads)
-  IF(THREADS_FOUND)
-    ADD_DEFINITIONS(-DUSE_PTHREAD_ATOMICS=1)
-    TARGET_LINK_LIBRARIES(TH ${CMAKE_THREAD_LIBS_INIT})
-    MESSAGE(STATUS "Atomics: using pthread")
-  ENDIF()
-ENDIF()
+TARGET_LINK_LIBRARIES(TH OpenMP::OpenMP_C)
 
 FIND_PACKAGE(BLAS)
 IF(BLAS_FOUND)
@@ -353,21 +192,11 @@ IF(UNIX)
   ENDIF(HAVE_MALLOC_USABLE_SIZE)
 ENDIF(UNIX)
 
-IF(NOT MSVC)
-  TARGET_LINK_LIBRARIES(TH m)
-ENDIF(NOT MSVC)
+TARGET_LINK_LIBRARIES(TH m)
 
-# Is __thread supported?
-IF(NOT MSVC)
-  CHECK_C_SOURCE_COMPILES("static __thread int x = 1; int main() { return x; }" C_HAS_THREAD)
-ELSE(NOT MSVC)
-  CHECK_C_SOURCE_COMPILES("static __declspec( thread ) int x = 1; int main() { return x; }" C_HAS_THREAD)
-ENDIF(NOT MSVC)
-IF(NOT C_HAS_THREAD)
-  MESSAGE(STATUS "Warning: __thread is not supported, generating thread-unsafe code")
-ELSE(NOT C_HAS_THREAD)
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DTH_HAVE_THREAD")
-ENDIF(NOT C_HAS_THREAD)
+# GCC always provides C11 atomics and __thread.
+TARGET_COMPILE_DEFINITIONS(TH PRIVATE USE_C11_ATOMICS=1)
+SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DTH_HAVE_THREAD")
 
 INCLUDE_DIRECTORIES("${CMAKE_CURRENT_BINARY_DIR}")
 CONFIGURE_FILE(THGeneral.h.in "${CMAKE_CURRENT_BINARY_DIR}/THGeneral.h")
@@ -477,11 +306,12 @@ IF (BLAS_FOUND AND BLAS_INSTALL_LIBRARIES)
   ENDIF()
 ENDIF()
 
-# Create THConfig.cmake
-GET_TARGET_PROPERTY(TH_OUTPUT_NAME TH LOCATION)
-GET_FILENAME_COMPONENT(TH_OUTPUT_NAME ${TH_OUTPUT_NAME} NAME)
-SET(TH_LIBRARIES "${CMAKE_INSTALL_PREFIX}/${TH_INSTALL_LIB_SUBDIR}/${TH_OUTPUT_NAME}")
+# Create THConfig.cmake. TARGET_LINKER_FILE_NAME is the file to link against:
+# libTH.so on Linux, the import library libTH.dll.a on Windows.
+SET(TH_LIBRARIES "${CMAKE_INSTALL_PREFIX}/${TH_INSTALL_LIB_SUBDIR}/$<TARGET_LINKER_FILE_NAME:TH>")
 SET(TH_INCLUDE_DIR "${CMAKE_INSTALL_PREFIX}/${TH_INSTALL_INCLUDE_SUBDIR}/TH")
-CONFIGURE_FILE(THConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/THConfig.cmake")
+CONFIGURE_FILE(THConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/THConfig.cmake.gen")
+FILE(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/THConfig.cmake"
+  INPUT "${CMAKE_CURRENT_BINARY_DIR}/THConfig.cmake.gen")
 INSTALL(FILES "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/THConfig.cmake"
   DESTINATION "${TH_INSTALL_CMAKE_SUBDIR}")

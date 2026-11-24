@@ -14,11 +14,7 @@
 
 #ifdef _OPENMP
 
-#ifndef _WIN32
 #define PRAGMA(P) _Pragma(#P)
-#else
-#define PRAGMA(P) __pragma(P)
-#endif
 
 #define TH_TENSOR_APPLY_CONTIG(TYPE, TENSOR, CODE) \
 { \

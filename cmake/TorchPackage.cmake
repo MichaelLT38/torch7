@@ -1,19 +1,7 @@
 # -*- cmake -*-
 
 MACRO(ADD_TORCH_LIBRARY package type src)
-  IF ("${type}" STREQUAL "STATIC")
-    if ("${src}" MATCHES "cu$" OR "${src}" MATCHES "cu;")
-      CUDA_ADD_LIBRARY(${package} STATIC ${src})
-    else()
-      ADD_LIBRARY(${package} STATIC ${src})
-    endif()
-  ELSE()
-    if ("${src}" MATCHES "cu$" OR "${src}" MATCHES "cu;")
-      CUDA_ADD_LIBRARY(${package} ${type} ${src})
-    else()
-      ADD_LIBRARY(${package} ${type} ${src})
-    endif()
-  ENDIF()
+  ADD_LIBRARY(${package} ${type} ${src})
 ENDMACRO()
 
 MACRO(ADD_TORCH_PACKAGE package src luasrc)
