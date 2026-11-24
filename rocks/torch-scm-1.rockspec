@@ -2,21 +2,20 @@ package = "torch"
 version = "scm-1"
 
 source = {
-   url = "git://github.com/torch/torch7.git",
+   url = "git+https://github.com/MichaelLT38/torch7.git",
 }
 
 description = {
    summary = "Torch7",
    detailed = [[
    ]],
-   homepage = "https://github.com/torch/torch7",
+   homepage = "https://github.com/MichaelLT38/torch7",
    license = "BSD"
 }
 
+-- paths and cwrap are bundled (lib/paths, lib/cwrap) and installed by this rock.
 dependencies = {
    "lua >= 5.1",
-   "paths >= 1.0",
-   "cwrap >= 1.0"
 }
 
 build = {
