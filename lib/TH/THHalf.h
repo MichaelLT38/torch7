@@ -5,13 +5,7 @@
 #include <stdint.h>
 
 /* Neither built-in nor included from Cutorch, use our definition lifted from CUDA */
-#if defined(__GNUC__)
 #define __thalign__(n) __attribute__((aligned(n)))
-#elif defined(_WIN32)
-#define __thalign__(n) __declspec(align(n))
-#else
-#define __thalign__(n)
-#endif
 
 typedef struct __thalign__(2){
   unsigned short x;

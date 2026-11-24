@@ -5,7 +5,7 @@
 #include <windows.h>
 #include <assert.h>
 #define TimeType __int64
-static __declspec( thread ) TimeType ticksPerSecond = 0;
+static __thread TimeType ticksPerSecond = 0;
 
 /*
  * There is an example of getrusage for windows in following link:

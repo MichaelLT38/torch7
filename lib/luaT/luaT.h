@@ -18,7 +18,7 @@ extern "C" {
 # endif
 #endif
 
-#if (defined(_MSC_VER) || defined(__MINGW32__))
+#ifdef _WIN32
 # define DLL_EXPORT __declspec(dllexport)
 # define DLL_IMPORT __declspec(dllimport)
 # ifdef luaT_EXPORTS
@@ -116,13 +116,7 @@ LUAT_API int luaT_lua_pushudata(lua_State *L);
 /* deprecated functions */
 /* ids have been replaced by string names to identify classes */
 /* comments show what function (that you should use) they call now */
-#if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 1))
 #define LUAT_DEPRECATED  __attribute__((__deprecated__))
-#elif (defined(_MSC_VER) || defined(__MINGW32__))
-#define LUAT_DEPRECATED __declspec(deprecated)
-#else
-#define LUAT_DEPRECATED
-#endif
 
 LUAT_API LUAT_DEPRECATED int luaT_pushmetaclass(lua_State *L, const char *tname); /* same as luaT_pushmetatable */
 LUAT_API LUAT_DEPRECATED const char* luaT_id(lua_State *L, int ud); /* same as luaT_typename */

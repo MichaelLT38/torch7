@@ -5,12 +5,7 @@
 
 /******************************************************************************
  * Atomic operations for TH
- *  Five backends are integrated:
- *  - C11 atomic operations
- *  - MSVC intrinsics
- *  - GCC intrinsics
- *  - Pthread if none of the above is available
- *  - Unsafe mode in none of the above is available
+ *  Implemented with C11 <stdatomic.h> (GCC is the only supported compiler).
  ******************************************************************************/
 
 
@@ -115,10 +110,11 @@ TH_API ptrdiff_t THAtomicAddPtrdiff(ptrdiff_t volatile *a, ptrdiff_t value);
 */
 TH_API ptrdiff_t THAtomicCompareAndSwapPtrdiff(ptrdiff_t volatile *a, ptrdiff_t oldvalue, ptrdiff_t newvalue);
 
+/* NOTE: ATOMIC_INT_LOCK_FREE comes from <stdatomic.h>, which is not included
+   here, so this is currently never defined and the refcounted IPC allocator in
+   THAllocator.c is compiled out. Kept as-is to preserve existing behavior. */
 #if defined(USE_C11_ATOMICS) && defined(ATOMIC_INT_LOCK_FREE) && \
   ATOMIC_INT_LOCK_FREE == 2
-#define TH_ATOMIC_IPC_REFCOUNT 1
-#elif defined(USE_MSC_ATOMICS) || defined(USE_GCC_ATOMICS)
 #define TH_ATOMIC_IPC_REFCOUNT 1
 #endif
 

@@ -1,9 +1,5 @@
 #if defined(__AVX2__)
-#ifndef _MSC_VER
 #include <x86intrin.h>
-#else
-#include <intrin.h>
-#endif
 #include "AVX2.h"
 
 void THDoubleVector_cadd_AVX2(double *z, const double *x, const double *y, const double c, const ptrdiff_t n) {

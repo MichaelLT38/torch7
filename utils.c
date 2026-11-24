@@ -60,7 +60,7 @@ int torch_islongargs(lua_State *L, int index)
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
-static __declspec( thread ) LARGE_INTEGER ticksPerSecond = { 0 };
+static __thread LARGE_INTEGER ticksPerSecond = { 0 };
 #endif
 
 static int torch_isatty(lua_State *L)

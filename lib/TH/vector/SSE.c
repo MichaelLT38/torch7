@@ -1,8 +1,4 @@
-#ifndef _MSC_VER
 #include <x86intrin.h>
-#else
-#include <intrin.h>
-#endif
 
 static void THDoubleVector_fill_SSE(double *x, const double c, const ptrdiff_t n) {
   ptrdiff_t i;

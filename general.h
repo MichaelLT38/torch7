@@ -8,14 +8,6 @@
 #include "luaT.h"
 #include "TH.h"
 
-#if (defined(_MSC_VER) || defined(__MINGW32__))
-
-#define snprintf _snprintf
-#define popen _popen
-#define pclose _pclose
-
-#endif
-
 #if LUA_VERSION_NUM >= 503
 /* one can simply enable LUA_COMPAT_5_2 to be backward compatible.
 However, this does not work when we are trying to use system-installed lua,

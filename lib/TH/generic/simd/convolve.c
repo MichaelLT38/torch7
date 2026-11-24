@@ -1,52 +1,11 @@
 #if defined(__AVX__)
 
-#ifdef _MSC_VER
-#include <intrin.h>
-
-static __inline int __get_cpuid (unsigned int __level, unsigned int *__eax,
-                                 unsigned int *__ebx, unsigned int *__ecx,
-                                 unsigned int *__edx) {
-  unsigned int cpui[4];
-  __cpuid(cpui, __level);
-  *__eax = cpui[0]; *__ebx = cpui[1]; *__ecx = cpui[2]; *__edx = cpui[3];
-  return 1;
-}
-
-static void xgetbv(unsigned int op, unsigned int* eax, unsigned int* edx) {
-  *eax = 0; *edx = 0;
-  if (op == 0)
-      *eax = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
-}
-
-#else
-
-#if __i386__
-#define __cpuid(__level, __eax, __ebx, __ecx, __edx) \
-__asm("  pushl  %%ebx\n" \
-"  cpuid\n" \
-"  mov    %%ebx,%1\n" \
-"  popl   %%ebx" \
-: "=a"(__eax), "=r" (__ebx), "=c"(__ecx), "=d"(__edx) \
-: "0"(__level))
-#else
-#define __cpuid(__level, __eax, __ebx, __ecx, __edx) \
-__asm("cpuid" : "=a"(__eax), "=b" (__ebx), "=c"(__ecx), "=d"(__edx) \
-: "0"(__level))
-#endif
-
-static __inline int __get_cpuid (unsigned int __level, unsigned int *__eax,
-                                 unsigned int *__ebx, unsigned int *__ecx,
-                                 unsigned int *__edx) {
-  __cpuid(__level, *__eax, *__ebx, *__ecx, *__edx);
-  return 1;
-}
+#include <cpuid.h>
 
 static void xgetbv(unsigned int op, unsigned int* eax, unsigned int* edx) {
   __asm__ __volatile__
   (".byte 0x0f, 0x01, 0xd0": "=a" (*eax), "=d" (*edx) : "c" (op) : "cc");
 }
-
-#endif
 
 enum ECPUFeature
 {

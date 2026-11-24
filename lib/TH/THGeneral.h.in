@@ -119,13 +119,4 @@ do {                                                                  \
 #define THMin(X, Y)  ((X) < (Y) ? (X) : (Y))
 #define THMax(X, Y)  ((X) > (Y) ? (X) : (Y))
 
-#if (defined(_MSC_VER) || defined(__MINGW32__))
-# define log1p(x) THLog1p(x)
-#define snprintf _snprintf
-#define popen _popen
-#define pclose _pclose
-#include <BaseTsd.h>
-typedef SSIZE_T ssize_t;
-#endif
-
 #endif
