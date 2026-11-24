@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          pkgs="cmake ninja-build gcc-${{ matrix.gcc }}"
+          pkgs="cmake ninja-build gcc-${{ matrix.gcc }} libc6-dev"
           if [ "${{ matrix.lua }}" = luajit ]; then pkgs="$pkgs luajit libluajit-5.1-dev";
           else pkgs="$pkgs lua5.1 liblua5.1-0-dev"; fi
           if [ "${{ matrix.blas }}" = openblas ]; then pkgs="$pkgs libopenblas-dev liblapack-dev"; fi
