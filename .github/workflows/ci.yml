@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux / gcc-${{ matrix.gcc }} / ${{ matrix.lua }} / blas=${{ matrix.blas }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # minimum supported GCC, no BLAS/LAPACK (built-in fallbacks)
+          - { gcc: 13, lua: luajit, blas: none }
+          # newest GCC on the image, with OpenBLAS + LAPACK
+          - { gcc: 14, lua: luajit, blas: openblas }
+          # plain Lua 5.1 interpreter
+          - { gcc: 14, lua: lua5.1, blas: none }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          pkgs="cmake ninja-build gcc-${{ matrix.gcc }}"
+          if [ "${{ matrix.lua }}" = luajit ]; then pkgs="$pkgs luajit libluajit-5.1-dev";
+          else pkgs="$pkgs lua5.1 liblua5.1-0-dev"; fi
+          if [ "${{ matrix.blas }}" = openblas ]; then pkgs="$pkgs libopenblas-dev liblapack-dev"; fi
+          sudo apt-get install -y --no-install-recommends $pkgs
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=gcc-${{ matrix.gcc }}
+          -DLUA=$(command -v ${{ matrix.lua }})
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    name: windows / msys2-ucrt64 / luajit
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-luajit
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=gcc
+          -DLUA="$(cygpath -m "$(command -v luajit)")"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

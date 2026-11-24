@@ -1,10 +1,45 @@
-[![Join the chat at https://gitter.im/torch/torch7](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/torch/torch7?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-[![Build Status](https://travis-ci.org/torch/torch7.svg)](https://travis-ci.org/torch/torch7)
+[![CI](https://github.com/MichaelLT38/torch7/actions/workflows/ci.yml/badge.svg)](https://github.com/MichaelLT38/torch7/actions/workflows/ci.yml)
 
 ## Development Status
 
-Torch is not in active development. The functionality provided by the C backend of Torch, which are the TH, THNN, THC, THCUNN libraries is actively extended and re-written in the ATen C++11 library ([source](https://github.com/pytorch/pytorch/tree/master/aten), [mirror](https://github.com/zdevito/ATen/)).
-ATen exposes all operators you would expect from torch7, nn, cutorch, and cunn directly in C++11 and includes additional support for sparse tensors and distributed operations. It is to note however that the API and semantics of the backend libraries in Torch-7 are different from the semantice provided by ATen. For example ATen provides numpy-style broadcasting while TH* dont. For information on building the forked Torch-7 libraries in C, refer to ["The C interface" in pytorch/aten/src/README.md](https://github.com/pytorch/pytorch/tree/master/aten/src#the-c-interface).
+This is a maintained fork of [torch/torch7](https://github.com/torch/torch7), which
+stopped active development around 2017 (its C backend lives on in PyTorch's ATen).
+The goal here is a modern, fast CPU tensor library that stays **independent, small
+and self-contained C**: no C++, no required dependencies, one supported compiler.
+
+Out of scope: GPU, distributed training, a JIT, sparse tensors.
+
+## Building
+
+Requirements:
+
+* **GCC >= 13** (the only supported compiler; on Windows use [MSYS2](https://www.msys2.org/) **UCRT64**)
+* CMake >= 3.22
+* LuaJIT (preferred) or Lua 5.1
+* Optional: a BLAS/LAPACK such as OpenBLAS (otherwise TH uses built-in fallbacks
+  and the linear-algebra functions that need LAPACK are unavailable)
+
+`cwrap` and `paths` are bundled in `lib/`, so nothing else needs to be installed.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLUA=$(command -v luajit)
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`ctest` runs the TH C test suites (`th.<type>`, `th.misc`) and the Lua suite
+(`lua.torch`). Without LAPACK, the 21 LAPACK-only Lua tests are skipped and listed.
+
+Installing with luarocks still works: `luarocks make rocks/torch-scm-1.rockspec`.
+
+### Benchmarks
+
+```sh
+build/th_bench > new.csv
+luajit bench/compare.lua bench/baselines/phase0_win11-ucrt64-gcc15_24t.csv new.csv
+```
+
+`bench/bench_pytorch.py` times the same operations in PyTorch for comparison.
 
 
 ## Need help? ##
