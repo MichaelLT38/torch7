@@ -159,6 +159,8 @@ IF(LAPACK_FOUND)
   SET(USE_LAPACK 1)
   TARGET_LINK_LIBRARIES(TH ${LAPACK_LIBRARIES})
 ENDIF(LAPACK_FOUND)
+# Visible to the parent project (tests skip LAPACK-only cases without it).
+SET(TH_HAS_LAPACK "${LAPACK_FOUND}" CACHE INTERNAL "TH was built with LAPACK")
 
 IF (UNIX AND NOT APPLE)
    INCLUDE(CheckLibraryExists)

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.22)
 project(Torch LANGUAGES C)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -12,6 +12,11 @@ INCLUDE(TorchPathsInit)
 INCLUDE(TorchPackage)
 INCLUDE(TorchWrap)
 INCLUDE(TorchExports)
+
+# Put every library and Lua module in the build root so the build tree can be
+# used directly (tests `require 'torch'` from it without installing).
+SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # Torch libraries
 ADD_SUBDIRECTORY(lib)
@@ -41,3 +46,44 @@ ENDIF()
 
 INSTALL(FILES "README.md" DESTINATION "${Torch_INSTALL_LUA_PATH_SUBDIR}/torch")
 INSTALL(DIRECTORY "doc" DESTINATION "${Torch_INSTALL_LUA_PATH_SUBDIR}/torch")
+
+######################################################################
+# In-tree staging of the Lua sources, mirroring the installed layout
+# (<lua dir>/torch/*.lua, <lua dir>/paths/init.lua, <lua dir>/cwrap/*.lua).
+######################################################################
+SET(TORCH_STAGE_LUA "${CMAKE_BINARY_DIR}/lua")
+SET(_cwrap_lua lib/cwrap/init.lua lib/cwrap/cinterface.lua lib/cwrap/types.lua)
+ADD_CUSTOM_TARGET(torch_stage ALL
+  COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${TORCH_STAGE_LUA}/torch" "${TORCH_STAGE_LUA}/paths" "${TORCH_STAGE_LUA}/cwrap"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${luasrc} "${TORCH_STAGE_LUA}/torch/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different lib/paths/init.lua "${TORCH_STAGE_LUA}/paths/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${_cwrap_lua} "${TORCH_STAGE_LUA}/cwrap/"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  COMMENT "Staging Lua sources in ${TORCH_STAGE_LUA}"
+  VERBATIM)
+
+######################################################################
+# Tests (ctest)
+######################################################################
+OPTION(TORCH_BUILD_TESTS "Build and register the test suites" ON)
+IF(TORCH_BUILD_TESTS)
+  ENABLE_TESTING()
+
+  IF(TH_HAS_LAPACK)
+    SET(_has_lapack 1)
+  ELSE()
+    SET(_has_lapack 0)
+    MESSAGE(STATUS "TH has no LAPACK: the Lua suite will skip LAPACK tests")
+  ENDIF()
+
+  ADD_TEST(NAME lua.torch
+    COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/run_lua_tests.lua"
+            "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}" ${_has_lapack}
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  IF(WIN32)
+    # Windows resolves libTH.dll/libluaT.dll through PATH.
+    SET_TESTS_PROPERTIES(lua.torch PROPERTIES
+      ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${CMAKE_BINARY_DIR}")
+  ENDIF()
+ENDIF()
