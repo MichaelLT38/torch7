@@ -36,9 +36,9 @@ typedef struct _Timer
 static TimeType torch_Timer_realtime()
 {
 #ifdef _WIN32
-  TimeType current;
+  LARGE_INTEGER current;
   QueryPerformanceCounter(&current);
-  return current;
+  return current.QuadPart;
 #else
   struct timeval current;
   gettimeofday(&current, NULL);
@@ -73,8 +73,9 @@ static int torch_Timer_new(lua_State *L)
 #ifdef _WIN32
   if (ticksPerSecond == 0)
   {
-    assert(sizeof(LARGE_INTEGER) == sizeof(__int64));
-    QueryPerformanceFrequency(&ticksPerSecond);
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    ticksPerSecond = freq.QuadPart;
   }
 #endif
   Timer *timer = luaT_alloc(L, sizeof(Timer));
