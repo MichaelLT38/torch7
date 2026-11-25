@@ -1897,16 +1897,23 @@ typedef struct {
   int64_t stride;   /* input stride along it, in bytes */
 } THTensor_(ReduceCtx);
 
-/* legacy layout 1 (reduced dim has stride 1): one accreal sum per slice */
+/* legacy layout 1 (reduced dim has stride 1): one accreal sum per slice.
+   Phase 3: 8 independent accumulators per slice so the additions overlap
+   (integer sums stay exact; floating-point sums change by rounding only). */
 static void THTensor_(sumSliceLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_)
 {
   const THTensor_(ReduceCtx) *c = ctx_;
   char *rp = d[0], *xp = d[1];
   for (int64_t j = 0; j < n_; j++, rp += s[0], xp += s[1]) {
-    accreal sum = 0;
-    for (int64_t i = 0; i < c->n; i++)
-      sum += *(const real *)(xp + i * c->stride);
-    *(real *)rp = (real)sum;
+    const real *x = (const real *)xp;
+    accreal a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0, a7 = 0;
+    int64_t i = 0;
+    for (; i + 8 <= c->n; i += 8) {
+      a0 += x[i];     a1 += x[i + 1]; a2 += x[i + 2]; a3 += x[i + 3];
+      a4 += x[i + 4]; a5 += x[i + 5]; a6 += x[i + 6]; a7 += x[i + 7];
+    }
+    for (; i < c->n; i++) a0 += x[i];
+    *(real *)rp = (real)(((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)));
   }
 }
 
