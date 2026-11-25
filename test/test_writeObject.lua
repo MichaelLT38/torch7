@@ -109,8 +109,9 @@ function tests.test_warning_msg()
   torch.class('Bar', foo)
 
   local obj = foo.Bar()
-  local tensor = torch.Tensor()
-  obj.data = tensor:cdata() -- pick something NOT writable
+  -- pick something NOT writable (a coroutine works on Lua 5.1 and LuaJIT;
+  -- tensor:cdata() only exists with the LuaJIT FFI)
+  obj.data = coroutine.create(function() end)
 
   local file = torch.MemoryFile('rw'):binary()
   local ok, _ = pcall(torch.File.writeObject, file, obj)
