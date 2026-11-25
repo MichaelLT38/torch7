@@ -57,6 +57,8 @@ static const long tt_shapes[][2] = {{1, 1}, {7, 13}, {64, 33}, {400, 300}};
 #include "generic/th_tensor_tests.c"
 #include "THGenerateAllTypes.h"
 
+#include "test_iter.c"   /* suite "iter": THIter unit tests */
+
 /* ------------------------------------------------------------------------ */
 /* Non-generic tests                                                        */
 /* ------------------------------------------------------------------------ */
@@ -281,6 +283,7 @@ static const th_suite suites[] = {
   {"long", test_Long_suite},     {"float", test_Float_suite},
   {"double", test_Double_suite}, {"misc", misc_suite},
   {"large", large_suite},
+  {"iter", iter_suite},
 };
 
 int main(int argc, char **argv)

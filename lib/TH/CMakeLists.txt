@@ -107,11 +107,11 @@ ENDIF(C_AVX2_FOUND)
 
 SET(hdr
   THHalf.h THAllocator.h THSize.h THStorage.h THTensor.h THTensorApply.h THBlas.h THMath.h
-  THLapack.h THLogAdd.h THRandom.h THVector.h THAtomic.h )
+  THLapack.h THLogAdd.h THRandom.h THVector.h THAtomic.h THIter.h )
 
 SET(src
   THGeneral.c THHalf.c THAllocator.c THSize.c THStorage.c THTensor.c THBlas.c THLapack.c
-  THLogAdd.c THRandom.c THFile.c THDiskFile.c THMemoryFile.c THAtomic.c THVector.c)
+  THLogAdd.c THRandom.c THFile.c THDiskFile.c THMemoryFile.c THAtomic.c THVector.c THIter.c)
 
 SET(src ${src} ${hdr} ${simd})
 
@@ -246,6 +246,7 @@ INSTALL(FILES
   THTensorMacros.h
   THVector.h
   THAtomic.h
+  THIter.h
   THHalf.h
   DESTINATION "${TH_INSTALL_INCLUDE_SUBDIR}/TH")
 
