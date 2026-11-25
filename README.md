@@ -28,7 +28,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 `ctest` runs the TH C test suites (`th.<type>`, `th.misc`, `th.large`) and the Lua
-suites (`lua.torch`, `lua.int64`). Without LAPACK, the 21 LAPACK-only Lua tests are
+suites (`lua.torch`, `lua.int64`, `lua.writeObject`). Without LAPACK, the 21 LAPACK-only Lua tests are
 skipped and listed. `th.large` needs about 2 GB of RAM and skips itself if the
 allocation fails.
 
@@ -39,7 +39,14 @@ allocation fails.
   32 bits on Windows, so Windows builds were limited to 2^31 elements.
 * **Binary files store longs as 8 bytes on every platform** (as Linux and macOS
   always did). Files written in binary mode by an upstream *Windows* build used
-  4-byte longs; read them with `file:longSize(4)`.
+  4-byte longs; read them with `torch.load(path, 'b32')` or `file:longSize(4)`.
+* **Loading is data-only by default.** `torch.load`, `torch.deserialize` and
+  `File:readObject` refuse serialized Lua functions, because loading one runs code
+  stored in the file (and LuaJIT does not verify bytecode). Tensors, storages,
+  Torch classes, tables, numbers, strings and booleans load as before. For a file
+  you trust, opt in with `torch.load(path, mode, referenced, {allowFunctions = true})`,
+  `torch.deserialize(str, mode, {allowFunctions = true})` or
+  `file:allowFunctions(true)`. Saving functions is unchanged.
 * `LongTensor:random()` *with no arguments* on Windows now gives the same values as
   on Linux (upstream reduced them modulo 2^31 on Windows). Every other random
   stream is unchanged.

@@ -13,6 +13,7 @@ end
 local function serializeAndDeserialize(obj)
    local file = torch.MemoryFile()
    file:binary()
+   file:allowFunctions(true) -- these tests round-trip closures on purpose
    local ok, msg = pcall (file.writeObject, file, obj)
    myTester:assert(ok, 'error in writing an object'  )
    file:seek(1)
@@ -231,6 +232,60 @@ function tests.test_serializeToStorage()
       torch.serializeToStorage("foo"):size(), size,
       "memory and disk serializations should have the same size"
    )
+end
+
+-- Data-only loading is the default: serialized functions are refused unless
+-- explicitly allowed, because loading them runs code from the file.
+local REFUSED = 'refusing to load a serialized Lua function'
+
+function tests.test_functions_refused_by_default()
+   local file = torch.MemoryFile():binary()
+   file:writeObject(function() return 42 end)
+   file:seek(1)
+   local ok, msg = pcall(file.readObject, file)
+   myTester:assert(not ok, 'reading a function must fail by default')
+   myTester:assert(tostring(msg):find(REFUSED, 1, true) ~= nil, 'clear error message: ' .. tostring(msg))
+   file:close()
+end
+
+function tests.test_nested_function_refused_by_default()
+   local s = torch.serialize({data = torch.Tensor{1, 2}, hook = function() end})
+   local ok, msg = pcall(torch.deserialize, s)
+   myTester:assert(not ok, 'a function nested in a table must be refused too')
+   myTester:assert(tostring(msg):find(REFUSED, 1, true) ~= nil, tostring(msg))
+end
+
+function tests.test_functions_allowed_when_requested()
+   local s = torch.serialize({f = function(x) return x * 2 end})
+   local t = torch.deserialize(s, nil, {allowFunctions = true})
+   myTester:eq(t.f(21), 42)
+
+   local path = os.tmpname()
+   torch.save(path, function() return 'ok' end)
+   local ok, msg = pcall(torch.load, path)
+   myTester:assert(not ok and tostring(msg):find(REFUSED, 1, true) ~= nil, 'torch.load refuses by default')
+   local f = torch.load(path, nil, nil, {allowFunctions = true})
+   myTester:eq(f(), 'ok')
+   os.remove(path)
+end
+
+function tests.test_data_loads_without_options()
+   local obj = {a = 1, b = 'two', c = {true, false}, t = torch.LongTensor{3, 4}}
+   local path = os.tmpname()
+   torch.save(path, obj)
+   local back = torch.load(path)
+   os.remove(path)
+   myTester:eq(back.a, 1)
+   myTester:eq(back.b, 'two')
+   myTester:eq(back.c[1], true)
+   myTester:eq(back.t[2], 4)
+   myTester:eq(torch.deserialize(torch.serialize(obj)).b, 'two')
+end
+
+function tests.test_allowFunctions_argument_checks()
+   myTester:assertError(function() torch.deserialize(torch.serialize(1), nil, 'yes') end)
+   myTester:assertError(function() torch.deserialize(torch.serialize(1), nil, {allowFunctions = 1}) end)
+   myTester:assertError(function() torch.MemoryFile():allowFunctions('yes') end)
 end
 
 myTester:add(tests)

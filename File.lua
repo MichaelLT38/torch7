@@ -71,6 +71,39 @@ function File:isReferenced()
    return not env.force
 end
 
+-- Reading a serialized Lua function runs code taken from the file (and LuaJIT
+-- does not verify bytecode, so a crafted file can also corrupt memory).
+-- readObject() therefore refuses functions unless this is enabled. Enable it
+-- only for files you trust. Writing functions is unaffected.
+function File:allowFunctions(allow)
+   assert(allow == nil or type(allow) == 'boolean', 'true or false (or nil) expected')
+   if not torch.getenv(self).writeObjects then
+      torch.setenv(self, {
+            writeObjects={}, writeObjectsRef={},
+            readObjects={},
+            objectNameStack={},
+            upvalueRefToId={}, upvalueIdToClosure={},
+         })
+   end
+   local env = torch.getenv(self)
+   env.allowFunctions = (allow ~= false)
+   torch.setenv(self, env)
+   return self
+end
+
+function File:isAllowingFunctions()
+   return torch.getenv(self).allowFunctions == true
+end
+
+local function checkFunctionAllowed(file)
+   if not file:isAllowingFunctions() then
+      error('refusing to load a serialized Lua function: loading it would run code '
+            .. 'stored in the file. Only if you trust the file, enable it with '
+            .. 'file:allowFunctions(true), or pass {allowFunctions = true} as the last '
+            .. 'argument of torch.load / torch.deserialize / torch.deserializeFromStorage.', 0)
+   end
+end
+
 local function getmetamethod(obj, name)
    local func
    local status
@@ -271,6 +304,7 @@ function File:readObject()
       local size = self:readInt()
       return self:readChar(size):string()
    elseif typeidx == TYPE_FUNCTION then
+       checkFunctionAllowed(self)
        local size = self:readInt()
        local dumped = self:readChar(size):string()
        local func, err = loadstring(dumped)
@@ -283,6 +317,10 @@ function File:readObject()
        end
        return func
    elseif typeidx == TYPE_TABLE or typeidx == TYPE_TORCH or typeidx == TYPE_RECUR_FUNCTION or typeidx == LEGACY_TYPE_RECUR_FUNCTION then
+      if typeidx == TYPE_RECUR_FUNCTION or typeidx == LEGACY_TYPE_RECUR_FUNCTION then
+         checkFunctionAllowed(self)
+      end
+
       -- read the index
       local index = self:readInt()
 
@@ -389,12 +427,23 @@ function torch.save(filename, object, mode, referenced)
    file:close()
 end
 
-function torch.load(filename, mode, referenced)
+-- options (optional table): allowFunctions = true to load serialized Lua
+-- functions (they run code from the file; see File:allowFunctions).
+local function checkOptions(options)
+   assert(options == nil or type(options) == 'table', 'options must be a table (or nil)')
+   options = options or {}
+   assert(options.allowFunctions == nil or type(options.allowFunctions) == 'boolean',
+          'options.allowFunctions must be true or false (or nil)')
+   return options
+end
+
+function torch.load(filename, mode, referenced, options)
    assert(mode == 'binary' or mode == 'b32' or mode == 'b64' or
           mode == nil or mode == 'ascii',
           '"binary", "b32", "b64" or "ascii" (or nil) expected for mode')
    assert(referenced == nil or referenced == true or referenced == false,
           'true or false (or nil) expected for referenced')
+   options = checkOptions(options)
    local longSize
    if mode == 'b32' or mode == 'b64' then
       longSize = tonumber(mode:match('%d+')) / 8
@@ -405,9 +454,11 @@ function torch.load(filename, mode, referenced)
    local file = torch.DiskFile(filename, 'r')
    file[mode](file)
    file:referenced(referenced)
+   file:allowFunctions(options.allowFunctions == true)
    if longSize then file:longSize(longSize) end
-   local object = file:readObject()
+   local ok, object = pcall(file.readObject, file)
    file:close()
+   if not ok then error(object, 0) end
    return object
 end
 
@@ -430,8 +481,9 @@ function torch.serializeToStorage(object, mode)
    return storage
 end
 
-function torch.deserializeFromStorage(storage, mode)
+function torch.deserializeFromStorage(storage, mode, options)
    mode = mode or 'binary'
+   options = checkOptions(options)
    local tx = torch.CharTensor(storage)
    local xp = torch.CharStorage(tx:size(1)+1)
    local txp = torch.CharTensor(xp)
@@ -439,14 +491,16 @@ function torch.deserializeFromStorage(storage, mode)
    txp[tx:size(1)+1] = 0
    local f = torch.MemoryFile(xp)
    f = f[mode](f)
-   local object = f:readObject()
+   f:allowFunctions(options.allowFunctions == true)
+   local ok, object = pcall(f.readObject, f)
    f:close()
+   if not ok then error(object, 0) end
    return object
 end
 
-function torch.deserialize(str, mode)
+function torch.deserialize(str, mode, options)
    local storage = torch.CharStorage():string(str)
-   return torch.deserializeFromStorage(storage, mode)
+   return torch.deserializeFromStorage(storage, mode, options)
 end
 
 -- public API (saveobj/loadobj are safe for global import)
