@@ -142,6 +142,55 @@ static inline float THVectorMath_sigmoidScalar(float x)
   }                                                                              \
   for (; i < n; i++) y[i] = tanhf(x[i]);
 
+/* log (Cephes logf): x = m * 2^e with m in [sqrt(1/2), sqrt(2)), then
+   log(x) = e*ln2 + log1p(m-1) with a degree-9 polynomial. Fast path for
+   positive normal finite x; 0, negatives, subnormals, inf and NaN use libm. */
+#define THVM_LOG_BODY                                                            \
+  int64_t i = 0;                                                                 \
+  for (; i + 8 <= n; i += 8) {                                                   \
+    THv8f v;                                                                     \
+    memcpy(&v, x + i, sizeof(v));                                                \
+    THv8i ok = (v >= 1.17549435e-38f) & (v <= 3.40282347e+38f);  /* NaN -> false */ \
+    if (!THVM_ALL(ok)) {                                                         \
+      for (int j = 0; j < 8; j++) y[i + j] = logf(x[i + j]);                     \
+      continue;                                                                  \
+    }                                                                            \
+    THv8i bits;                                                                  \
+    memcpy(&bits, &v, sizeof(bits));                                             \
+    THv8i e = ((bits >> 23) & 0xff) - 126;              /* x = m * 2^e, m in [0.5, 1) */ \
+    THv8i mbits = (bits & 0x807fffff) | 0x3f000000;                              \
+    THv8f m;                                                                     \
+    memcpy(&m, &mbits, sizeof(m));                                               \
+    THv8i lo = (m < 0.707106781186547524f);             /* m < sqrt(1/2) */      \
+    e += lo;                                            /* (lo is -1 / 0) */     \
+    THv8f mlo = m + m - 1.0f;   /* (no top-level commas: this is a macro arg) */ \
+    THv8f mhi = m - 1.0f;                                                        \
+    THv8i mloi;                                                                  \
+    THv8i mhii;                                                                  \
+    memcpy(&mloi, &mlo, sizeof(mloi));                                           \
+    memcpy(&mhii, &mhi, sizeof(mhii));                                           \
+    THv8i ri = (lo & mloi) | (~lo & mhii);                                       \
+    THv8f r;                                                                     \
+    memcpy(&r, &ri, sizeof(r));                                                  \
+    THv8f ef = __builtin_convertvector(e, THv8f);                                \
+    THv8f z = r * r;                                                             \
+    THv8f p = 7.0376836292E-2f * r - 1.1514610310E-1f;                           \
+    p = p * r + 1.1676998740E-1f;                                                \
+    p = p * r - 1.2420140846E-1f;                                                \
+    p = p * r + 1.4249322787E-1f;                                                \
+    p = p * r - 1.6668057665E-1f;                                                \
+    p = p * r + 2.0000714765E-1f;                                                \
+    p = p * r - 2.4999993993E-1f;                                                \
+    p = p * r + 3.3333331174E-1f;                                                \
+    THv8f yv = p * r * z;                                                        \
+    yv = yv + ef * -2.12194440e-4f;                                              \
+    yv = yv - 0.5f * z;                                                          \
+    THv8f out = r + yv;                                                          \
+    out = out + ef * 0.693359375f;                                               \
+    memcpy(y + i, &out, sizeof(out));                                            \
+  }                                                                              \
+  for (; i < n; i++) y[i] = logf(x[i]);
+
 /* ---- instantiation & dispatch ------------------------------------------- */
 
 /* Without AVX2 the scalar libm functions are used: 32-byte vectors without
@@ -171,3 +220,4 @@ static inline float THVectorMath_sigmoidScalar(float x)
 THVM_DEFINE(exp, THVM_EXP_BODY, expf)
 THVM_DEFINE(sigmoid, THVM_SIGMOID_BODY, THVectorMath_sigmoidScalar)
 THVM_DEFINE(tanh, THVM_TANH_BODY, tanhf)
+THVM_DEFINE(log, THVM_LOG_BODY, logf)

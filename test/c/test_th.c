@@ -264,6 +264,41 @@ static void misc_float_vector_math(void)
   THFloatTensor_free(x); THFloatTensor_free(y); THFloatTensor_free(s);
 }
 
+/* Vectorized float log: geometric sweep over every positive normal float
+ * exponent (<= 4 ulp vs double log), and special values exactly as libm. */
+static void misc_float_vector_log(void)
+{
+  const int64_t n = 2000003;
+  THFloatTensor *x = THFloatTensor_newWithSize1d(n), *y = THFloatTensor_new();
+  float *xd = THFloatTensor_data(x);
+  const double lo = log(1.17549435e-38), hi = log(3.0e38);
+  for (int64_t i = 0; i < n; i++) xd[i] = (float)exp(lo + (hi - lo) * (double)i / (double)(n - 1));
+  THFloatTensor_log(y, x);
+  double worst = 0; float worstX = 0;
+  for (int64_t i = 0; i < n; i++) {
+    double u = th_test_ulps_float(THFloatTensor_data(y)[i], (float)log((double)xd[i]));
+    if (u > worst) { worst = u; worstX = xd[i]; }
+  }
+  CHECK(worst <= 4, "log: worst error %g ulp at x = %.9g", worst, (double)worstX);
+  printf("    log      max error %g ulp over [1.2e-38, 3e38]\n", worst);
+
+  const float specials[] = {NAN, INFINITY, -INFINITY, 0.0f, -0.0f, -1.0f, 1e-45f, 1e-39f,
+                            1.0f, 2.0f, 0.5f, 0.70710677f, 0.70710683f, 3.4028235e38f, 1.17549435e-38f};
+  const int ns = (int)(sizeof(specials) / sizeof(specials[0]));
+  THFloatTensor *s = THFloatTensor_newWithSize1d(8 * ns);
+  for (int k = 0; k < ns; k++)
+    for (int j = 0; j < 8; j++) THFloatTensor_data(s)[8 * k + j] = j == 5 ? specials[k] : 1.5f + (float)j;
+  THFloatTensor_log(y, s);
+  for (int k = 0; k < ns; k++) {
+    float xv = specials[k], got = THFloatTensor_data(y)[8 * k + 5], want = logf(xv);
+    int ok = isnan(want) ? isnan(got)
+           : (want == 0 || isinf(want)) ? (got == want && signbit(got) == signbit(want))
+           : th_test_ulps_float(got, want) <= 4;
+    CHECK(ok, "log(%g): got %.9g want %.9g", (double)xv, (double)got, (double)want);
+  }
+  THFloatTensor_free(x); THFloatTensor_free(y); THFloatTensor_free(s);
+}
+
 static void misc_suite(void)
 {
   RUN(misc_shape_errors);
@@ -272,6 +307,7 @@ static void misc_suite(void)
   RUN(misc_max_min_ties_lowest_index);
   RUN(misc_long_values_64bit);
   RUN(misc_float_vector_math);
+  RUN(misc_float_vector_log);
 }
 
 /* ------------------------------------------------------------------------ */
