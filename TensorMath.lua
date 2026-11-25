@@ -335,6 +335,20 @@ for _,Tensor in ipairs({"ByteTensor", "CharTensor",
          {name=Tensor, method={default=1}},
          {name=real}})
 
+   -- arithmetic right shift (floor toward -inf); integer tensors only
+   wrap("arshift",
+        cname("arshift"),
+        {{name=Tensor, default=true, returned=true, method={default='nil'}},
+         {name=Tensor, method={default=1}},
+         {name=real}})
+
+   -- division rounding toward -inf; pairs with remainder (floor-mod)
+   wrap("floordiv",
+        cname("floordiv"),
+        {{name=Tensor, default=true, returned=true, method={default='nil'}},
+         {name=Tensor, method={default=1}},
+         {name=real}})
+
    wrap("bitand",
         cname("bitand"),
         {{name=Tensor, default=true, returned=true, method={default='nil'}},
@@ -414,6 +428,18 @@ for _,Tensor in ipairs({"ByteTensor", "CharTensor",
 
    wrap("cremainder",
         cname("cremainder"),
+        {{name=Tensor, default=true, returned=true, method={default='nil'}},
+         {name=Tensor, method={default=1}},
+         {name=Tensor}})
+
+   wrap("carshift",
+        cname("carshift"),
+        {{name=Tensor, default=true, returned=true, method={default='nil'}},
+         {name=Tensor, method={default=1}},
+         {name=Tensor}})
+
+   wrap("cfloordiv",
+        cname("cfloordiv"),
         {{name=Tensor, default=true, returned=true, method={default='nil'}},
          {name=Tensor, method={default=1}},
          {name=Tensor}})

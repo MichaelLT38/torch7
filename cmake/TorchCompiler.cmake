@@ -27,5 +27,11 @@ set(CMAKE_C_EXTENSIONS ON)
 
 add_compile_options(-Werror=implicit-function-declaration -Werror=format)
 
+# Signed integer overflow wraps (two's complement) instead of being undefined
+# behavior, so integer tensor arithmetic has defined results on overflow, as
+# hardware adders/multipliers do. (Integer MIN / -1 still traps on x86; the
+# division kernels special-case it.)
+add_compile_options(-fwrapv)
+
 # OpenMP ships with GCC (libgomp), so it is a hard requirement.
 find_package(OpenMP REQUIRED COMPONENTS C)

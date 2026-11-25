@@ -648,8 +648,80 @@ void THTensor_(mul)(THTensor *r_, THTensor *t, real value)
   }
 }
 
+/* Unsigned counterpart of `real`, used by the (logical) shift operators and the
+   wrapping negation below. `unsigned real` is not valid C when real is the
+   int64_t typedef. */
+#if defined(TH_REAL_IS_LONG)
+# define TH_UNSIGNED_REAL uint64_t
+#else
+# define TH_UNSIGNED_REAL unsigned real
+#endif
+
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+/* ---------------------------------------------------------------------------
+ * Integer division helpers, shared by div/cdiv, fmod/cfmod (truncating) and
+ * floordiv/cfloordiv, remainder/cremainder (flooring). In C, x / 0 and
+ * MIN / -1 are undefined (both trap on x86 and kill the process), so:
+ *   - a zero divisor raises a TH error (checked before any parallel work);
+ *   - b == -1 is special-cased: quotient = wrapping negation, remainder = 0.
+ * ------------------------------------------------------------------------- */
+static inline real THTensor_(divTruncInt)(real a, real b)
+{
+#if !defined(TH_REAL_IS_BYTE)
+  if (b == -1) return (real)(0 - (TH_UNSIGNED_REAL)a);
+#endif
+  return a / b;
+}
+
+static inline real THTensor_(modTruncInt)(real a, real b)
+{
+#if !defined(TH_REAL_IS_BYTE)
+  if (b == -1) return 0;
+#endif
+  return a % b;
+}
+
+static inline real THTensor_(divFloorInt)(real a, real b)
+{
+#if !defined(TH_REAL_IS_BYTE)
+  if (b == -1) return (real)(0 - (TH_UNSIGNED_REAL)a);
+#endif
+  real q = a / b;
+  /* compare signs instead of multiplying, which could overflow */
+  if ((a % b != 0) && ((a < 0) != (b < 0))) q = q - 1;
+  return q;
+}
+
+static inline real THTensor_(modFloorInt)(real a, real b)
+{
+#if !defined(TH_REAL_IS_BYTE)
+  if (b == -1) return 0;
+#endif
+  real m = a % b;
+  if ((m != 0) && ((m < 0) != (b < 0))) m = m + b;
+  return m;
+}
+
+static void THTensor_(checkNoZeroDivisor)(THTensor *src, int argNumber)
+{
+  int zero = 0;
+  TH_TENSOR_APPLY(real, src, if (*src_data == 0) zero = 1;);
+  THArgCheck(!zero, argNumber, "integer division by zero");
+}
+#endif
+
 void THTensor_(div)(THTensor *r_, THTensor *t, real value)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+  THArgCheck(value != 0, 3, "integer division by zero");
+#if !defined(TH_REAL_IS_BYTE)
+  if (value == -1) {  /* MIN / -1 traps on x86: negate (wrapping) instead */
+    THTensor_(resizeAs)(r_, t);
+    TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(divTruncInt)(*t_data, value););
+    return;
+  }
+#endif
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
     TH_TENSOR_APPLY2_CONTIG(real, r_, real, t, THVector_(divs)(r__data, t_data, value, r__len););
@@ -658,12 +730,31 @@ void THTensor_(div)(THTensor *r_, THTensor *t, real value)
   }
 }
 
-/* Unsigned counterpart of `real`, used by the (logical) shift operators below.
-   `unsigned real` is not valid C when real is the int64_t typedef. */
-#if defined(TH_REAL_IS_LONG)
-# define TH_UNSIGNED_REAL uint64_t
-#else
-# define TH_UNSIGNED_REAL unsigned real
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+/* Integer shift amounts must lie in [0, bits-1]: anything else is undefined
+   behavior in C (on x86 the count is silently masked, elsewhere it differs).
+   A shift by 0 is the identity. Checked before any (parallel) work starts. */
+#define TH_SHIFT_BITS ((int64_t)(8 * sizeof(real)))
+
+static void THTensor_(checkShiftAmount)(real value, int argNumber)
+{
+  int64_t s = (int64_t)value;
+  THArgCheck(s >= 0 && s < TH_SHIFT_BITS, argNumber,
+             "shift amount %" PRId64 " is out of range for %s: must be in [0, %" PRId64 "]",
+             s, TH_CONCAT_STRING_3(torch., Real, Tensor), TH_SHIFT_BITS - 1);
+}
+
+static void THTensor_(checkShiftAmounts)(THTensor *src, int argNumber)
+{
+  int found = 0;
+  int64_t bad = 0;
+  TH_TENSOR_APPLY(real, src,
+                  int64_t s = (int64_t)*src_data;
+                  if (!found && (s < 0 || s >= TH_SHIFT_BITS)) { found = 1; bad = s; });
+  THArgCheck(!found, argNumber,
+             "shift amount %" PRId64 " is out of range for %s: must be in [0, %" PRId64 "]",
+             bad, TH_CONCAT_STRING_3(torch., Real, Tensor), TH_SHIFT_BITS - 1);
+}
 #endif
 
 void THTensor_(lshift)(THTensor *r_, THTensor *t, real value)
@@ -675,6 +766,7 @@ void THTensor_(lshift)(THTensor *r_, THTensor *t, real value)
 #elif defined(TH_REAL_IS_HALF)
   return THError("lshift is not supported for torch.HalfTensor");
 #else
+  THTensor_(checkShiftAmount)(value, 3);
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -710,6 +802,9 @@ void THTensor_(rshift)(THTensor *r_, THTensor *t, real value)
 #elif defined(TH_REAL_IS_HALF)
   return THError("rshift is not supported for torch.HalfTensor");
 #else
+  /* NOTE: on signed types this is a LOGICAL shift (zero-filling, via the
+     unsigned type). For an arithmetic shift (floor toward -inf) use arshift. */
+  THTensor_(checkShiftAmount)(value, 3);
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -738,6 +833,9 @@ void THTensor_(rshift)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(fmod)(THTensor *r_, THTensor *t, real value)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+  THArgCheck(value != 0, 3, "integer division by zero");
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
 
@@ -750,20 +848,23 @@ void THTensor_(fmod)(THTensor *r_, THTensor *t, real value)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
           rp[i] = fmod(tp[i], value);
 #else
-          rp[i] = tp[i] % value;
+          rp[i] = THTensor_(modTruncInt)(tp[i], value);
 #endif
       }
   } else {
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = fmod(*t_data, value););
 #else
-      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (*t_data % value););
+      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(modTruncInt)(*t_data, value););
 #endif
   }
 }
 
 void THTensor_(remainder)(THTensor *r_, THTensor *t, real value)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+  THArgCheck(value != 0, 3, "integer division by zero");
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
       real *tp = THTensor_(data)(t);
@@ -775,19 +876,14 @@ void THTensor_(remainder)(THTensor *r_, THTensor *t, real value)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
           rp[i] = (value == 0)? NAN : tp[i] - value * floor(tp[i] / value);
 #else
-          // There is no NAN for integers
-          rp[i] = tp[i] % value;
-          if (rp[i] * value < 0)
-            rp[i] += value;
+          rp[i] = THTensor_(modFloorInt)(tp[i], value);
 #endif
       }
   } else {
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (value == 0)? NAN : *t_data - value * floor(*t_data / value););
 #else
-       // There is no NAN for integers
-      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data % value;
-                                          if (*r__data * value < 0) *r__data += value;);
+      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(modFloorInt)(*t_data, value););
 #endif
   }
 }
@@ -926,6 +1022,13 @@ void THTensor_(cpow)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+  /* integer: reject zero divisors up front; MIN / -1 wraps (see divTruncInt) */
+  THTensor_(checkNoZeroDivisor)(src, 3);
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(divTruncInt)(*t_data, *src_data););
+  return;
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cdiv)(r__data, t_data, src_data, r__len););
@@ -938,6 +1041,9 @@ void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
 {
 #if defined(TH_REAL_IS_HALF)
   return THError("clshift is not supported for torch.HalfTensor");
+#endif
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+  THTensor_(checkShiftAmounts)(src, 3);
 #endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
@@ -979,6 +1085,9 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_HALF)
   return THError("crshift is not supported for torch.HalfTensor");
 #endif
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+  THTensor_(checkShiftAmounts)(src, 3);
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1014,10 +1123,86 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * arshift / carshift: ARITHMETIC right shift (sign-filling), i.e. floor(x / 2^s)
+ * rounding toward -inf. Integer tensors only. GCC defines >> on negative
+ * signed integers as arithmetic, so this is exact over the whole range.
+ * (rshift / crshift stay LOGICAL on signed types.)
+ * ------------------------------------------------------------------------- */
+void THTensor_(arshift)(THTensor *r_, THTensor *t, real value)
+{
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+  (void)r_; (void)t; (void)value;
+  THError("arshift is only defined for integer tensors, not %s",
+          TH_CONCAT_STRING_3(torch., Real, Tensor));
+#else
+  THTensor_(checkShiftAmount)(value, 3);
+  const int s = (int)value;
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (real)(*t_data >> s););
+#endif
+}
+
+void THTensor_(carshift)(THTensor *r_, THTensor *t, THTensor *src)
+{
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+  (void)r_; (void)t; (void)src;
+  THError("carshift is only defined for integer tensors, not %s",
+          TH_CONCAT_STRING_3(torch., Real, Tensor));
+#else
+  THTensor_(checkShiftAmounts)(src, 3);
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = (real)(*t_data >> (int)*src_data););
+#endif
+}
+
+/* ---------------------------------------------------------------------------
+ * floordiv / cfloordiv: division rounding toward -inf. Pairs with remainder /
+ * cremainder (floor-mod):  a == floordiv(a, b) * b + remainder(a, b).
+ * Integer division by zero raises an error. For floating point: floor(a / b).
+ * ------------------------------------------------------------------------- */
+void THTensor_(floordiv)(THTensor *r_, THTensor *t, real value)
+{
+#if defined(TH_REAL_IS_HALF)
+  (void)r_; (void)t; (void)value;
+  THError("floordiv is not supported for torch.HalfTensor");
+#elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (real)floor((double)*t_data / (double)value););
+#else
+  THArgCheck(value != 0, 3, "integer division by zero");
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(divFloorInt)(*t_data, value););
+#endif
+}
+
+void THTensor_(cfloordiv)(THTensor *r_, THTensor *t, THTensor *src)
+{
+#if defined(TH_REAL_IS_HALF)
+  (void)r_; (void)t; (void)src;
+  THError("cfloordiv is not supported for torch.HalfTensor");
+#elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY3(real, r_, real, t, real, src,
+                   *r__data = (real)floor((double)*t_data / (double)*src_data););
+#else
+  THTensor_(checkNoZeroDivisor)(src, 3);
+  THTensor_(resizeAs)(r_, t);
+  TH_TENSOR_APPLY3(real, r_, real, t, real, src,
+                   *r__data = THTensor_(divFloorInt)(*t_data, *src_data););
+#endif
+}
+
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#undef TH_SHIFT_BITS
+#endif
 #undef TH_UNSIGNED_REAL
 
 void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+  THTensor_(checkNoZeroDivisor)(src, 3);
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
       real *tp = THTensor_(data)(t);
@@ -1030,14 +1215,14 @@ void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
           rp[i] = fmod(tp[i], sp[i]);
 #else
-          rp[i] = tp[i] % sp[i];
+          rp[i] = THTensor_(modTruncInt)(tp[i], sp[i]);
 #endif
       }
   } else {
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = fmod(*t_data, *src_data););
 #else
-      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = (*t_data % *src_data););
+      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(modTruncInt)(*t_data, *src_data););
 #endif
 
   }
@@ -1045,6 +1230,9 @@ void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
 {
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+  THTensor_(checkNoZeroDivisor)(src, 3);
+#endif
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
       real *tp = THTensor_(data)(t);
@@ -1057,19 +1245,14 @@ void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
           rp[i] = (sp[i] == 0)? NAN : tp[i] - sp[i] * floor(tp[i] / sp[i]);
 #else
-          // There is no NAN for integers
-          rp[i] = tp[i] % sp[i];
-          if (rp[i] * sp[i] < 0)
-            rp[i] += sp[i];
+          rp[i] = THTensor_(modFloorInt)(tp[i], sp[i]);
 #endif
       }
   } else {
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = (*src_data == 0)? NAN : *t_data - *src_data * floor(*t_data / *src_data););
 #else
-      // There is no NAN for integers
-      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data % *src_data;
-                                                     if (*r__data * *src_data < 0) *r__data += *src_data;);
+      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(modFloorInt)(*t_data, *src_data););
 #endif
 
   }

@@ -28,7 +28,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 `ctest` runs the TH C test suites (`th.<type>`, `th.misc`, `th.large`) and the Lua
-suites (`lua.torch`, `lua.int64`, `lua.writeObject`). Without LAPACK, the 21 LAPACK-only Lua tests are
+suites (`lua.torch`, `lua.int64`, `lua.writeObject`, `lua.intops`). Without LAPACK, the 21 LAPACK-only Lua tests are
 skipped and listed. `th.large` needs about 2 GB of RAM and skips itself if the
 allocation fails.
 
@@ -50,6 +50,16 @@ allocation fails.
 * `LongTensor:random()` *with no arguments* on Windows now gives the same values as
   on Linux (upstream reduced them modulo 2^31 on Windows). Every other random
   stream is unchanged.
+* **Integer arithmetic is fully defined** (upstream left these cases to C's
+  undefined behavior, which on x86 masked shift counts or killed the process):
+  * Shift amounts outside `[0, bits-1]` raise an error (a shift by `0` is the
+    identity) for `lshift`, `rshift`, `clshift`, `crshift`, `arshift`, `carshift`.
+  * Integer division by zero raises an error in `div`, `cdiv`, `fmod`, `cfmod`,
+    `remainder`, `cremainder`, `floordiv`, `cfloordiv`; `MIN / -1` wraps to `MIN`.
+  * Signed overflow wraps (two's complement): TH is compiled with `-fwrapv`.
+* **New:** `arshift` / `carshift` (arithmetic right shift, `floor(x / 2^s)`) and
+  `floordiv` / `cfloordiv` (floor division, pairing with `remainder`). `rshift`
+  stays a *logical* shift on signed types, as upstream.
 
 Installing with luarocks still works: `luarocks make rocks/torch-scm-1.rockspec`.
 

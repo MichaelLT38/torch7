@@ -972,7 +972,15 @@ Right shift all elements in the `Tensor` by the given `value`.
 
 `z:rshift(x, 2)` puts the result of `x >> 2` in `z`.
 
-Note: For float type tensors, `x:lshift(value)` evaluates `x:div(math.pow(2, value))` internally.
+Note: on **signed integer** tensors `rshift` is a **logical** shift: it fills with
+zeros, so `torch.IntTensor{-4}:rshift(1)` is `2147483646`. For an arithmetic shift
+(sign-filling, `floor(x / 2^value)`) use [arshift](#torch.arshift).
+
+The shift amount must be in `[0, bits-1]` for the tensor's type (e.g. `[0, 31]` for
+`IntTensor`); other amounts raise an error. A shift by `0` returns the input.
+The same rule applies to `lshift`, `clshift`, `crshift`, `arshift` and `carshift`.
+
+Note: For float type tensors, `x:rshift(value)` evaluates `x:div(math.pow(2, value))` internally.
 
 <a name="torch.crshift"></a>
 ### [res] torch.crshift([res,] tensor1, tensor2) ###
@@ -998,6 +1006,36 @@ The number of elements must match, but sizes do not matter.
 `y:crshift(x)` right shifts all elements of `y` with corresponding elements of `x`.
 
 `z:crshift(x, y)` puts the result in `z`.
+
+Like `rshift`, this is a logical shift on signed types; see [carshift](#torch.carshift).
+
+<a name="torch.arshift"></a>
+### [res] torch.arshift([res,] tensor, value) ###
+<a name="torch.arshift"></a>
+
+Arithmetic (sign-filling) right shift of all elements by `value` bits, i.e.
+`floor(x / 2^value)`, rounding toward minus infinity. Integer tensors only.
+Exact over the whole range of the type.
+
+```lua
+> torch.arshift(torch.IntTensor{-8, -7, -1, 7}, 1)
+-4
+-4
+-1
+ 3
+[torch.IntTensor of size 4]
+```
+
+`value` must be in `[0, bits-1]`; `0` is the identity. Calling form is the same as
+[rshift](#torch.rshift): `torch.arshift(z, x, s)`, `x:arshift(s)`, `z:arshift(x, s)`.
+
+<a name="torch.carshift"></a>
+### [res] torch.carshift([res,] tensor1, tensor2) ###
+<a name="torch.carshift"></a>
+
+Arithmetic right shift of each element of `tensor1` by the corresponding element of
+`tensor2`. The number of elements must match; every shift amount must be in
+`[0, bits-1]` (checked before anything is computed).
 
 <a name="torch.addcdiv"></a>
 ### [res] torch.addcdiv([res,] x [,value], tensor1, tensor2) ###
@@ -1067,7 +1105,7 @@ This works both for integer and floating point numbers. It behaves the same as L
 ### [res] torch.remainder([res,] tensor, value) ###
 <a name="torch.remainder"></a>
 
-Computes remainder of division (rounded to nearest) of all elements in the `Tensor` by `value`.
+Computes the remainder of the *floor* division of all elements in the `Tensor` by `value` (the result has the sign of `value`; see [floordiv](#torch.floordiv)). Integer division by zero raises an error.
 This works both for integer and floating point numbers. It behaves the same as `%` operator and can be expressed as `a % b = a - b * floor(a/b)`. See `torch.fmod()` for comparison.
 
 `z = torch.remainder(x, 2)` will return a new `Tensor` with the result of `x % 2`.
@@ -1116,15 +1154,15 @@ corresponding elements of `x`.
 ### [res] torch.cremainder([res,] tensor1, tensor2) ###
 <a name="torch.cremainder"></a>
 
-Computes element-wise remainder of the division (rounded to nearest) of `tensor1` by `tensor2`.
+Computes the element-wise remainder of the *floor* division of `tensor1` by `tensor2` (the result has the sign of the divisor), so `a == cfloordiv(a, b) * b + cremainder(a, b)`. Integer division by zero raises an error.
 The number of elements must match, but sizes do not matter.
 
 ```lua
 > x = torch.Tensor({{3, 3}, {-3, -3}})
 > y = torch.Tensor({{2, -2}, {2, -2}})
-> x:cfmod(y)
- 1  1
--1 -1
+> x:cremainder(y)
+ 1 -1
+ 1 -1
 [torch.DoubleTensor of size 2x2]
 ```
 
@@ -1137,6 +1175,32 @@ corresponding elements of `x`.
 
 `z:cremainder(x, y)` puts the result in `z`.
 
+
+<a name="torch.floordiv"></a>
+### [res] torch.floordiv([res,] tensor, value) ###
+<a name="torch.floordiv"></a>
+
+Divides all elements by `value`, rounding toward minus infinity. It pairs with
+[remainder](#torch.remainder): `a == floordiv(a, b) * b + remainder(a, b)`.
+For floating point tensors the result is `floor(a / b)`.
+
+Integer semantics (also for `div`, `cdiv`, `fmod`, `cfmod`, `remainder`, `cremainder`):
+division by zero raises an error, and `MIN / -1` wraps to `MIN` (remainder `0`)
+instead of trapping. `div`/`fmod` truncate toward zero, `floordiv`/`remainder` floor.
+
+```lua
+> torch.floordiv(torch.IntTensor{-7, 7}, 2)
+-4
+ 3
+[torch.IntTensor of size 2]
+```
+
+<a name="torch.cfloordiv"></a>
+### [res] torch.cfloordiv([res,] tensor1, tensor2) ###
+<a name="torch.cfloordiv"></a>
+
+Element-wise floor division of `tensor1` by `tensor2`; pairs with
+[cremainder](#torch.cremainder). The number of elements must match.
 
 <a name="torch.cmod"></a>
 ### [res] torch.cmod([res,] tensor1, tensor2) ###
