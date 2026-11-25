@@ -538,6 +538,230 @@ static void TT(addmv_dot)(void)
 #endif
 
 /* ------------------------------------------------------------------------ */
+/* Integer shifts and division. References are computed in __int128, which  */
+/* is exact for every TH integer type, including int64 extremes.            */
+/* Contract (agreed with LatticeAI, see README):                            */
+/*   rshift/crshift  LOGICAL on signed types     arshift/carshift  floor    */
+/*   lshift/clshift  wraps                       shift amounts: [0, bits-1] */
+/*   div/cdiv, fmod/cfmod      truncate (C)      zero divisor: TH error     */
+/*   floordiv/cfloordiv, remainder/cremainder    floor; MIN / -1 wraps      */
+/* ------------------------------------------------------------------------ */
+#ifndef TT_FLOATING
+#define TT_BITS ((int)(8 * sizeof(real)))
+
+/* v reduced modulo 2^bits into `real` (two's-complement wrap) */
+static real TT(wrap)(__int128 v)
+{
+  const unsigned __int128 mod = (unsigned __int128)1 << TT_BITS;
+  unsigned __int128 m = (unsigned __int128)v & (mod - 1);
+#if !defined(TH_REAL_IS_BYTE)
+  if (m >> (TT_BITS - 1)) return (real)((__int128)m - (__int128)mod);
+#endif
+  return (real)m;
+}
+
+static __int128 TT(ref_div_floor)(__int128 a, __int128 b)
+{
+  __int128 q = a / b;
+  if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
+  return q;
+}
+
+static unsigned __int128 TT(as_unsigned)(real a)
+{
+  const unsigned __int128 mod = (unsigned __int128)1 << TT_BITS;
+  return (unsigned __int128)(__int128)a & (mod - 1);
+}
+
+/* Test values: every value for 8/16-bit types; extremes + random otherwise. */
+#if defined(TH_REAL_IS_BYTE)
+# define TT_MINV ((__int128)0)
+# define TT_MAXV ((__int128)255)
+#else
+# define TT_MINV (-((__int128)1 << (TT_BITS - 1)))
+# define TT_MAXV (((__int128)1 << (TT_BITS - 1)) - 1)
+#endif
+
+static THTensor *TT(int_values)(uint64_t *rng)
+{
+  const __int128 minv = TT_MINV, maxv = TT_MAXV;
+  THTensor *t;
+  if (TT_BITS <= 16) {
+    int64_t n = (int64_t)((unsigned __int128)1 << TT_BITS);   /* every value; only for <= 16 bits */
+    t = THTensor_(newWithSize1d)(n);
+    for (int64_t i = 0; i < n; i++) THTensor_(data)(t)[i] = (real)(minv + i);
+  } else {
+    const int64_t nrand = 4000;
+    const __int128 fixed[] = {minv, minv + 1, minv + 2, -3, -2, -1, 0, 1, 2, 3, maxv - 2, maxv - 1, maxv};
+    const int64_t nfix = (int64_t)(sizeof(fixed) / sizeof(fixed[0]));
+    t = THTensor_(newWithSize1d)(nfix + nrand);
+    for (int64_t i = 0; i < nfix; i++) THTensor_(data)(t)[i] = (real)fixed[i];
+    for (int64_t i = 0; i < nrand; i++) {
+      *rng = *rng * 6364136223846793005ULL + 1442695040888963407ULL;
+      uint64_t bits = *rng ^ (*rng >> 29);
+      /* random magnitude too, so small and large values both appear */
+      int width = 1 + (int)((*rng >> 58) % TT_BITS);
+      __int128 v = (__int128)(bits & (width >= 64 ? ~0ULL : ((1ULL << width) - 1)));
+      if ((*rng >> 57) & 1) v = -v;
+      THTensor_(data)(t)[nfix + i] = TT(wrap)(v);
+    }
+  }
+  return t;
+}
+
+static void TT(int_shifts)(void)
+{
+  uint64_t rng = 12;
+  THTensor *a = TT(int_values)(&rng);
+  THTensor *r = THTensor_(new)();
+  const int64_t n = THTensor_(nElement)(a);
+  for (int s = 0; s < TT_BITS; s++) {
+    for (int op = 0; op < 3; op++) {
+      if (op == 0) THTensor_(arshift)(r, a, (real)s);
+      else if (op == 1) THTensor_(rshift)(r, a, (real)s);
+      else THTensor_(lshift)(r, a, (real)s);
+      int ok = 1;
+      for (int64_t i = 0; i < n && ok; i++) {
+        real x = THTensor_(data)(a)[i];
+        real want;
+        if (op == 0) want = TT(wrap)(TT(ref_div_floor)((__int128)x, (__int128)1 << s));
+        else if (op == 1) want = TT(wrap)((__int128)(TT(as_unsigned)(x) >> s));
+        else want = TT(wrap)((__int128)(TT(as_unsigned)(x) << s));
+        real got = THTensor_(data)(r)[i];
+        ok = got == want;
+        CHECK(ok, "%s(%" PRId64 ", %d): got %" PRId64 " want %" PRId64,
+              op == 0 ? "arshift" : op == 1 ? "rshift" : "lshift",
+              (int64_t)x, s, (int64_t)got, (int64_t)want);
+      }
+    }
+  }
+
+  /* element-wise variants: random amounts in [0, bits-1] */
+  THTensor *amt = THTensor_(newWithSize1d)(n);
+  for (int64_t i = 0; i < n; i++)
+    THTensor_(data)(amt)[i] = (real)(int)th_test_uniform(&rng, 0, TT_BITS);   /* [0, bits-1] */
+  for (int op = 0; op < 3; op++) {
+    if (op == 0) THTensor_(carshift)(r, a, amt);
+    else if (op == 1) THTensor_(crshift)(r, a, amt);
+    else THTensor_(clshift)(r, a, amt);
+    int ok = 1;
+    for (int64_t i = 0; i < n && ok; i++) {
+      real x = THTensor_(data)(a)[i];
+      int s = (int)THTensor_(data)(amt)[i];
+      real want = op == 0 ? TT(wrap)(TT(ref_div_floor)((__int128)x, (__int128)1 << s))
+                : op == 1 ? TT(wrap)((__int128)(TT(as_unsigned)(x) >> s))
+                          : TT(wrap)((__int128)(TT(as_unsigned)(x) << s));
+      ok = THTensor_(data)(r)[i] == want;
+      CHECK(ok, "%s element %" PRId64 " (x=%" PRId64 ", s=%d)",
+            op == 0 ? "carshift" : op == 1 ? "crshift" : "clshift", i, (int64_t)x, s);
+    }
+  }
+
+  /* out-of-range amounts raise an error; 0 is legal (identity) */
+  const real bad[2] = {(real)-1, (real)TT_BITS};
+  for (int k = 0; k < 2; k++) {
+    EXPECT_TH_ERROR(THTensor_(arshift)(r, a, bad[k]), "out of range");
+    EXPECT_TH_ERROR(THTensor_(rshift)(r, a, bad[k]), "out of range");
+    EXPECT_TH_ERROR(THTensor_(lshift)(r, a, bad[k]), "out of range");
+  }
+  THTensor_(fill)(amt, 1);
+  THTensor_(data)(amt)[n / 2] = (real)TT_BITS;
+  EXPECT_TH_ERROR(THTensor_(carshift)(r, a, amt), "out of range");
+  EXPECT_TH_ERROR(THTensor_(crshift)(r, a, amt), "out of range");
+  EXPECT_TH_ERROR(THTensor_(clshift)(r, a, amt), "out of range");
+
+  THTensor_(free)(a); THTensor_(free)(r); THTensor_(free)(amt);
+}
+
+static void TT(int_division)(void)
+{
+  static const char *opname[] = {"div", "fmod", "floordiv", "remainder"};
+  uint64_t rng = 13;
+  THTensor *a = TT(int_values)(&rng);
+  const int64_t n = THTensor_(nElement)(a);
+  THTensor *r = THTensor_(new)();
+
+  /* divisors: every value for 8-bit types; otherwise extremes, small values
+     (incl. -1 for MIN / -1) and random picks from the test values */
+  THTensor *divs;
+  if (TT_BITS == 8) {
+    divs = THTensor_(newClone)(a);
+  } else {
+    const __int128 fixed[] = {TT_MINV, TT_MINV + 1, -7, -3, -2, -1, 1, 2, 3, 7, TT_MAXV - 1, TT_MAXV};
+    const int64_t nfix = (int64_t)(sizeof(fixed) / sizeof(fixed[0])), nrand = 288;
+    divs = THTensor_(newWithSize1d)(nfix + nrand);
+    for (int64_t i = 0; i < nfix; i++) THTensor_(data)(divs)[i] = TT(wrap)(fixed[i]);
+    for (int64_t i = 0; i < nrand; i++)
+      THTensor_(data)(divs)[nfix + i] = THTensor_(data)(a)[(int64_t)th_test_uniform(&rng, 0, (double)n)];
+  }
+  const int64_t nd = THTensor_(nElement)(divs);
+  for (int64_t d = 0; d < nd; d++) {
+    real b = THTensor_(data)(divs)[d];
+    if (b == 0) continue;
+    for (int op = 0; op < 4; op++) {
+      if (op == 0) THTensor_(div)(r, a, b);
+      else if (op == 1) THTensor_(fmod)(r, a, b);
+      else if (op == 2) THTensor_(floordiv)(r, a, b);
+      else THTensor_(remainder)(r, a, b);
+      int ok = 1;
+      for (int64_t i = 0; i < n && ok; i++) {
+        __int128 x = (__int128)THTensor_(data)(a)[i], y = (__int128)b;
+        __int128 qf = TT(ref_div_floor)(x, y);
+        real want = op == 0 ? TT(wrap)(x / y) : op == 1 ? TT(wrap)(x % y)
+                  : op == 2 ? TT(wrap)(qf) : TT(wrap)(x - qf * y);
+        ok = THTensor_(data)(r)[i] == want;
+        CHECK(ok, "%s(%" PRId64 ", %" PRId64 "): got %" PRId64 " want %" PRId64, opname[op],
+              (int64_t)x, (int64_t)y, (int64_t)THTensor_(data)(r)[i], (int64_t)want);
+      }
+    }
+  }
+
+  /* element-wise variants over (value, shuffled-value) pairs */
+  THTensor *b = THTensor_(newClone)(a);
+  for (int64_t i = n - 1; i > 0; i--) {   /* Fisher-Yates */
+    int64_t j = (int64_t)th_test_uniform(&rng, 0, (double)(i + 1));
+    real tmp = THTensor_(data)(b)[i]; THTensor_(data)(b)[i] = THTensor_(data)(b)[j]; THTensor_(data)(b)[j] = tmp;
+  }
+  for (int64_t i = 0; i < n; i++) if (THTensor_(data)(b)[i] == 0) THTensor_(data)(b)[i] = 1;
+#if !defined(TH_REAL_IS_BYTE)
+  THTensor_(data)(b)[0] = -1;                  /* include MIN / -1 if MIN is a[0] */
+#endif
+  for (int op = 0; op < 4; op++) {
+    if (op == 0) THTensor_(cdiv)(r, a, b);
+    else if (op == 1) THTensor_(cfmod)(r, a, b);
+    else if (op == 2) THTensor_(cfloordiv)(r, a, b);
+    else THTensor_(cremainder)(r, a, b);
+    int ok = 1;
+    for (int64_t i = 0; i < n && ok; i++) {
+      __int128 x = (__int128)THTensor_(data)(a)[i], y = (__int128)THTensor_(data)(b)[i];
+      __int128 qf = TT(ref_div_floor)(x, y);
+      real want = op == 0 ? TT(wrap)(x / y) : op == 1 ? TT(wrap)(x % y)
+                : op == 2 ? TT(wrap)(qf) : TT(wrap)(x - qf * y);
+      ok = THTensor_(data)(r)[i] == want;
+      CHECK(ok, "c%s element %" PRId64 " (%" PRId64 ", %" PRId64 "): got %" PRId64 " want %" PRId64,
+            opname[op], i, (int64_t)x, (int64_t)y, (int64_t)THTensor_(data)(r)[i], (int64_t)want);
+    }
+  }
+
+  /* zero divisors raise an error (they trapped / killed the process before) */
+  EXPECT_TH_ERROR(THTensor_(div)(r, a, 0), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(fmod)(r, a, 0), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(floordiv)(r, a, 0), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(remainder)(r, a, 0), "division by zero");
+  THTensor_(data)(b)[n / 2] = 0;
+  EXPECT_TH_ERROR(THTensor_(cdiv)(r, a, b), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(cfmod)(r, a, b), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(cfloordiv)(r, a, b), "division by zero");
+  EXPECT_TH_ERROR(THTensor_(cremainder)(r, a, b), "division by zero");
+
+  THTensor_(free)(a); THTensor_(free)(b); THTensor_(free)(r); THTensor_(free)(divs);
+}
+#undef TT_BITS
+#undef TT_MINV
+#undef TT_MAXV
+#endif
+
+/* ------------------------------------------------------------------------ */
 /* Suite entry point for this type                                          */
 /* ------------------------------------------------------------------------ */
 static void TT(suite)(void)
@@ -556,6 +780,10 @@ static void TT(suite)(void)
 #if defined(TH_REAL_IS_INT) || defined(TH_REAL_IS_LONG) || defined(TT_FLOATING)
   RUN(TT(reductions));
   RUN(TT(sort));
+#endif
+#ifndef TT_FLOATING
+  RUN(TT(int_shifts));
+  RUN(TT(int_division));
 #endif
 }
 
