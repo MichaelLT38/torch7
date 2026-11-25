@@ -11,14 +11,14 @@ int th_test_failures = 0;
 int th_test_total_failed = 0;
 long th_test_checks = 0;
 const char *th_test_current = "";
-jmp_buf *th_test_jmp = NULL;
+th_jmp_buf *th_test_jmp = NULL;
 char th_test_errmsg[1024];
 
 static void th_test_on_error(const char *msg, void *data)
 {
   (void)data;
   snprintf(th_test_errmsg, sizeof(th_test_errmsg), "%s", msg);
-  if (th_test_jmp) longjmp(*th_test_jmp, 1);
+  if (th_test_jmp) TH_TEST_LONGJMP(*th_test_jmp);
   fprintf(stderr, "    UNEXPECTED TH error in %s: %s\n", th_test_current, msg);
   exit(2);
 }
@@ -228,10 +228,10 @@ static void large_over_2g_elements(void)
 {
   const int64_t n = ((int64_t)1 << 31) + 17;          /* > INT32_MAX */
   THByteTensor *volatile t = NULL;
-  jmp_buf jb;
-  jmp_buf *prev = th_test_jmp;
+  th_jmp_buf jb;
+  th_jmp_buf *prev = th_test_jmp;
   th_test_jmp = &jb;
-  if (setjmp(jb) == 0) t = THByteTensor_newWithSize1d(n);
+  if (TH_TEST_SETJMP(jb) == 0) t = THByteTensor_newWithSize1d(n);
   th_test_jmp = prev;
   if (!t) {
     printf("    SKIP: could not allocate %" PRId64 " bytes (%s)\n", n, th_test_errmsg);
@@ -285,6 +285,8 @@ static const th_suite suites[] = {
 
 int main(int argc, char **argv)
 {
+  /* unbuffered, so a crash still shows which test was running */
+  setvbuf(stdout, NULL, _IONBF, 0);
   th_test_init();
   int ran = 0;
   for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {

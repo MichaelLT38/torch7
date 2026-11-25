@@ -13,6 +13,14 @@
 
 #include <math.h>
 #include <setjmp.h>
+
+/* TH errors escape via GCC's __builtin_setjmp/__builtin_longjmp, not the C
+   library's: MinGW-w64's longjmp performs SEH unwinding, which intermittently
+   crashed when jumping out of TH frames on Windows. The builtins only restore
+   registers (a th_jmp_buf is 5 pointers; the jump value is always 1). */
+typedef void *th_jmp_buf[5];
+#define TH_TEST_SETJMP(b) __builtin_setjmp(b)
+#define TH_TEST_LONGJMP(b) __builtin_longjmp((b), 1)
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +32,7 @@ extern int th_test_failures;        /* failed checks in the current test */
 extern int th_test_total_failed;    /* failed tests overall */
 extern long th_test_checks;         /* checks performed overall */
 extern const char *th_test_current; /* name of the running test */
-extern jmp_buf *th_test_jmp;        /* where a TH error jumps to, or NULL */
+extern th_jmp_buf *th_test_jmp;        /* where a TH error jumps to, or NULL */
 extern char th_test_errmsg[1024];   /* message of the last TH error */
 
 void th_test_init(void);
@@ -43,12 +51,12 @@ void th_test_init(void);
 
 #define EXPECT_TH_ERROR(stmt, substr)                                       \
   do {                                                                      \
-    jmp_buf th_jb_;                                                         \
-    jmp_buf *th_prev_ = th_test_jmp;                                        \
+    th_jmp_buf th_jb_;                                                      \
+    th_jmp_buf *th_prev_ = th_test_jmp;                                     \
     volatile int th_raised_ = 0;                                            \
     th_test_errmsg[0] = '\0';                                               \
     th_test_jmp = &th_jb_;                                                  \
-    if (setjmp(th_jb_) == 0) { stmt; } else { th_raised_ = 1; }             \
+    if (TH_TEST_SETJMP(th_jb_) == 0) { stmt; } else { th_raised_ = 1; }             \
     th_test_jmp = th_prev_;                                                 \
     CHECK(th_raised_, "expected a TH error from: %s", #stmt);               \
     if (th_raised_ && (substr) != NULL)                                     \
