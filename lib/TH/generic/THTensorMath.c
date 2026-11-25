@@ -132,13 +132,27 @@ static int THTensor_(iterate3)(THTensor *r_, THTensor *a, THTensor *b, THIterLoo
 }
 
 /* Kernel generators: EXPR may use x (and y for binary ops) and value, the
-   real scalar passed through ctx (0 when ctx is NULL). */
+   real scalar passed through ctx (0 when ctx is NULL). When the run is
+   contiguous for every operand a typed loop is used, which the compiler can
+   vectorize; the per-element arithmetic is the same (no FMA contraction and
+   no reassociation in these flags), so results are identical either way. */
+#define TH_ITER_CONTIG(S) ((S) == (int64_t)sizeof(real))
+
 #define TH_ITER_KERNEL2(NAME, EXPR)                                            \
   static void THTensor_(NAME)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
   {                                                                           \
     const real value = ctx_ ? *(const real *)ctx_ : (real)0;                  \
     (void)value;                                                              \
     char *rp_ = d_[0], *xp_ = d_[1];                                          \
+    if (TH_ITER_CONTIG(s_[0]) && TH_ITER_CONTIG(s_[1])) {                      \
+      real *r_ = (real *)rp_;                                                 \
+      const real *xa_ = (const real *)xp_;                                    \
+      for (int64_t i_ = 0; i_ < n_; i_++) {                                   \
+        const real x = xa_[i_];                                               \
+        r_[i_] = (EXPR);                                                      \
+      }                                                                       \
+      return;                                                                 \
+    }                                                                         \
     for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1]) {         \
       const real x = *(const real *)xp_;                                      \
       *(real *)rp_ = (EXPR);                                                  \
@@ -151,6 +165,15 @@ static int THTensor_(iterate3)(THTensor *r_, THTensor *a, THTensor *b, THIterLoo
     const real value = ctx_ ? *(const real *)ctx_ : (real)0;                  \
     (void)value;                                                              \
     char *rp_ = d_[0], *xp_ = d_[1], *yp_ = d_[2];                            \
+    if (TH_ITER_CONTIG(s_[0]) && TH_ITER_CONTIG(s_[1]) && TH_ITER_CONTIG(s_[2])) { \
+      real *r_ = (real *)rp_;                                                 \
+      const real *xa_ = (const real *)xp_, *ya_ = (const real *)yp_;          \
+      for (int64_t i_ = 0; i_ < n_; i_++) {                                   \
+        const real x = xa_[i_], y = ya_[i_];                                  \
+        r_[i_] = (EXPR);                                                      \
+      }                                                                       \
+      return;                                                                 \
+    }                                                                         \
     for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1], yp_ += s_[2]) { \
       const real x = *(const real *)xp_, y = *(const real *)yp_;              \
       *(real *)rp_ = (EXPR);                                                  \
@@ -1815,6 +1838,177 @@ ptrdiff_t THTensor_(numel)(THTensor *t)
   return THTensor_(nElement)(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * Reductions along one dimension through THIter (Phase 2b).
+ *
+ * The iterator runs over the output (the input's shape with size 1 at the
+ * reduced dimension) paired with the first element of each input slice, so
+ * work is split across threads by output element. Each output element is
+ * computed with exactly the same arithmetic, in the same order, as the
+ * legacy code it replaces, so results are bit-identical.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+  int64_t n;        /* size of the reduced dimension */
+  int64_t stride;   /* input stride along it, in bytes */
+} THTensor_(ReduceCtx);
+
+/* legacy layout 1 (reduced dim has stride 1): one accreal sum per slice */
+static void THTensor_(sumSliceLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_)
+{
+  const THTensor_(ReduceCtx) *c = ctx_;
+  char *rp = d[0], *xp = d[1];
+  for (int64_t j = 0; j < n_; j++, rp += s[0], xp += s[1]) {
+    accreal sum = 0;
+    for (int64_t i = 0; i < c->n; i++)
+      sum += *(const real *)(xp + i * c->stride);
+    *(real *)rp = (real)sum;
+  }
+}
+
+/* legacy layout 2 (otherwise): out = ((0 + x_0) + x_1) + ... in `real`,
+   computed row by row over a run of outputs (memory-friendly, same order) */
+static void THTensor_(sumRowsLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_)
+{
+  const THTensor_(ReduceCtx) *c = ctx_;
+  char *rp = d[0];
+  if (TH_ITER_CONTIG(s[0]) && TH_ITER_CONTIG(s[1])) {   /* vectorizable, same order */
+    real *r = (real *)rp;
+    for (int64_t j = 0; j < n_; j++) r[j] = 0;
+    for (int64_t i = 0; i < c->n; i++) {
+      const real *x = (const real *)(d[1] + i * c->stride);
+      for (int64_t j = 0; j < n_; j++) r[j] = r[j] + x[j];
+    }
+    return;
+  }
+  for (int64_t j = 0; j < n_; j++) *(real *)(rp + j * s[0]) = 0;
+  for (int64_t i = 0; i < c->n; i++) {
+    const char *xp = d[1] + i * c->stride;
+    for (int64_t j = 0; j < n_; j++)
+      *(real *)(rp + j * s[0]) = *(real *)(rp + j * s[0]) + *(const real *)(xp + j * s[1]);
+  }
+}
+
+/* Run a slice kernel over nout outputs (keepdim shape) and t; the input is
+   the last operand. Returns 0 (caller falls back to the legacy code) if an
+   output overlaps t or t has too many dimensions. */
+static int THTensor_(reduceDimN)(int nout, const THIterOperand *outs, THTensor *t,
+                                 int dimension, THIterLoop loop)
+{
+  if (t->nDimension > TH_ITER_MAX_DIMS) return 0;
+  THIterOperand ops[TH_ITER_MAX_OPERANDS];
+  THIterOperand in = THTensor_(iterOperand)(t);
+  for (int k = 0; k < nout; k++) {
+    if (THIter_overlaps(&outs[k], &in)) return 0;
+    ops[k] = outs[k];
+  }
+  int64_t sliceSize[TH_ITER_MAX_DIMS];
+  for (int d = 0; d < t->nDimension; d++) sliceSize[d] = t->size[d];
+  sliceSize[dimension] = 1;   /* each output element sees the first element of its slice */
+  in.size = sliceSize;
+  ops[nout] = in;
+  THTensor_(ReduceCtx) ctx = {t->size[dimension], t->stride[dimension] * (int64_t)sizeof(real)};
+  THIter it;
+  THIter_build(&it, nout + 1, ops);
+  int64_t grain = TH_ITER_GRAIN / (ctx.n > 0 ? ctx.n : 1);
+  THIter_run(&it, loop, &ctx, grain > 0 ? grain : 1);
+  return 1;
+}
+
+static int THTensor_(reduceDim)(THTensor *r_, THTensor *t, int dimension, THIterLoop loop)
+{
+  THIterOperand out = THTensor_(iterOperand)(r_);
+  return THTensor_(reduceDimN)(1, &out, t, dimension, loop);
+}
+
+/* prod: same two legacy layouts as sum, with * and initial value 1 */
+static void THTensor_(prodSliceLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_)
+{
+  const THTensor_(ReduceCtx) *c = ctx_;
+  char *rp = d[0], *xp = d[1];
+  for (int64_t j = 0; j < n_; j++, rp += s[0], xp += s[1]) {
+    accreal prod = 1;
+    for (int64_t i = 0; i < c->n; i++)
+      prod *= *(const real *)(xp + i * c->stride);
+    *(real *)rp = (real)prod;
+  }
+}
+
+static void THTensor_(prodRowsLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_)
+{
+  const THTensor_(ReduceCtx) *c = ctx_;
+  char *rp = d[0];
+  if (TH_ITER_CONTIG(s[0]) && TH_ITER_CONTIG(s[1])) {   /* vectorizable, same order */
+    real *r = (real *)rp;
+    for (int64_t j = 0; j < n_; j++) r[j] = 1;
+    for (int64_t i = 0; i < c->n; i++) {
+      const real *x = (const real *)(d[1] + i * c->stride);
+      for (int64_t j = 0; j < n_; j++) r[j] = r[j] * x[j];
+    }
+    return;
+  }
+  for (int64_t j = 0; j < n_; j++) *(real *)(rp + j * s[0]) = 1;
+  for (int64_t i = 0; i < c->n; i++) {
+    const char *xp = d[1] + i * c->stride;
+    for (int64_t j = 0; j < n_; j++)
+      *(real *)(rp + j * s[0]) = *(real *)(rp + j * s[0]) * *(const real *)(xp + j * s[1]);
+  }
+}
+
+/* max / min with indices. Both legacy layouts keep the FIRST extreme in index
+   order (ties keep the lowest index) and stop at the first NaN; the slice
+   kernel scans each slice like legacy layout 1, the rows kernel walks rows
+   like legacy layout 2 (start from row 0, update only while not NaN). */
+#define TH_MAXMIN_KERNELS(NAME, KEEP)                                          \
+static void THTensor_(NAME##SliceLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_) \
+{                                                                             \
+  const THTensor_(ReduceCtx) *c = ctx_;                                       \
+  char *vp = d[0], *ip = d[1], *xp = d[2];                                    \
+  for (int64_t j = 0; j < n_; j++, vp += s[0], ip += s[1], xp += s[2]) {      \
+    real best = *(const real *)xp;                                            \
+    int64_t bi = 0;                                                           \
+    for (int64_t i = 0; i < c->n; i++) {                                      \
+      real value = *(const real *)(xp + i * c->stride);                       \
+      if (!(value KEEP best)) {                                               \
+        bi = i;                                                               \
+        best = value;                                                         \
+        th_isnan_break(value)                                                 \
+      }                                                                       \
+    }                                                                         \
+    *(real *)vp = best;                                                       \
+    *(int64_t *)ip = bi;                                                      \
+  }                                                                           \
+}                                                                             \
+static void THTensor_(NAME##RowsLoop)(char **d, const int64_t *s, int64_t n_, void *ctx_) \
+{                                                                             \
+  const THTensor_(ReduceCtx) *c = ctx_;                                       \
+  for (int64_t j = 0; j < n_; j++) {                                          \
+    *(real *)(d[0] + j * s[0]) = *(const real *)(d[2] + j * s[2]);            \
+    *(int64_t *)(d[1] + j * s[1]) = 0;                                        \
+  }                                                                           \
+  for (int64_t i = 0; i < c->n; i++) {                                        \
+    const char *xp = d[2] + i * c->stride;                                    \
+    for (int64_t j = 0; j < n_; j++) {                                        \
+      real x = *(const real *)(xp + j * s[2]);                                \
+      real *v = (real *)(d[0] + j * s[0]);                                    \
+      if (!(x KEEP *v) && !th_isnan(*v)) {                                    \
+        *v = x;                                                               \
+        *(int64_t *)(d[1] + j * s[1]) = i;                                    \
+      }                                                                       \
+    }                                                                         \
+  }                                                                           \
+}
+
+TH_MAXMIN_KERNELS(max, <=)
+TH_MAXMIN_KERNELS(min, >=)
+
+static int THTensor_(reduceDimMaxMin)(THTensor *values_, THLongTensor *indices_, THTensor *t,
+                                      int dimension, THIterLoop sliceLoop, THIterLoop rowsLoop)
+{
+  THIterOperand outs[2] = {THTensor_(iterOperand)(values_), THLongTensor_iterOperand(indices_)};
+  return THTensor_(reduceDimN)(2, outs, t, dimension,
+                               t->stride[dimension] == 1 ? sliceLoop : rowsLoop);
+}
+
 void THTensor_(max)(THTensor *values_, THLongTensor *indices_, THTensor *t, int dimension, int keepdim)
 {
   THLongStorage *dim;
@@ -1828,8 +2022,10 @@ void THTensor_(max)(THTensor *values_, THLongTensor *indices_, THTensor *t, int 
   THLongTensor_resize(indices_, dim, NULL);
   THLongStorage_free(dim);
 
-  // two implementations optimized for data locality
-  if (t->stride[dimension] == 1) {
+  if (THTensor_(reduceDimMaxMin)(values_, indices_, t, dimension,
+                                 THTensor_(maxSliceLoop), THTensor_(maxRowsLoop))) {
+    /* done (THIter; same results as the legacy layouts below) */
+  } else if (t->stride[dimension] == 1) {
     real theMax;
     real value;
     int64_t theIndex;
@@ -1908,8 +2104,10 @@ void THTensor_(min)(THTensor *values_, THLongTensor *indices_, THTensor *t, int 
   THLongTensor_resize(indices_, dim, NULL);
   THLongStorage_free(dim);
 
-  // two implementations optimized for data locality
-  if (t->stride[dimension] == 1) {
+  if (THTensor_(reduceDimMaxMin)(values_, indices_, t, dimension,
+                                 THTensor_(minSliceLoop), THTensor_(minRowsLoop))) {
+    /* done (THIter; same results as the legacy layouts below) */
+  } else if (t->stride[dimension] == 1) {
     real theMax;
     real value;
     int64_t theIndex;
@@ -1985,8 +2183,10 @@ void THTensor_(sum)(THTensor *r_, THTensor *t, int dimension, int keepdim)
   THTensor_(resize)(r_, dim, NULL);
   THLongStorage_free(dim);
 
-  // two implementations optimized for data locality
-  if (t->stride[dimension] == 1) {
+  if (THTensor_(reduceDim)(r_, t, dimension, t->stride[dimension] == 1
+                                               ? THTensor_(sumSliceLoop) : THTensor_(sumRowsLoop))) {
+    /* done */
+  } else if (t->stride[dimension] == 1) {
     TH_TENSOR_DIM_APPLY2(real, t, real, r_, dimension,
                          accreal sum = 0;
                          int64_t i;
@@ -2021,8 +2221,10 @@ void THTensor_(prod)(THTensor *r_, THTensor *t, int dimension, int keepdim)
   THTensor_(resize)(r_, dim, NULL);
   THLongStorage_free(dim);
 
-  // two implementations optimized for data locality
-  if (t->stride[dimension] == 1) {
+  if (THTensor_(reduceDim)(r_, t, dimension, t->stride[dimension] == 1
+                                               ? THTensor_(prodSliceLoop) : THTensor_(prodRowsLoop))) {
+    /* done */
+  } else if (t->stride[dimension] == 1) {
     TH_TENSOR_DIM_APPLY2(real, t, real, r_, dimension,
                          accreal prod = 1;
                          int64_t i;
