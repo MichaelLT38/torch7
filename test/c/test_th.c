@@ -118,11 +118,64 @@ static void misc_copy_cross_type(void)
   THFloatTensor_free(f); THLongTensor_free(l);
 }
 
+/* CONTRACT: max/min along a dim return the LOWEST index among tied values.
+ * Downstream code depends on this (e.g. LatticeAI's golden model and its
+ * hardware ARGMAX use the same rule), so a parallel or SIMD max/min kernel
+ * must preserve it. Checked for IntTensor and FloatTensor, both dims,
+ * keepdim 0/1, contiguous and transposed input. */
+static void misc_max_min_ties_lowest_index(void)
+{
+  const long rows = 37, cols = 1000;
+  /* row r: all zeros except +5 at columns tie_a < tie_b and -5 at columns
+     tie_c < tie_d, so both max and min have exactly two tied candidates */
+  for (int transposed = 0; transposed < 2; transposed++)
+  for (int dim = 0; dim < 2; dim++)
+  for (int keepdim = 0; keepdim < 2; keepdim++) {
+    /* logical shape: along `dim` there are `cols` candidates */
+    long n_slices = rows, n_cand = cols;
+    THIntTensor *ib = transposed ? THIntTensor_newWithSize2d(dim == 1 ? n_cand : n_slices, dim == 1 ? n_slices : n_cand)
+                                 : THIntTensor_newWithSize2d(dim == 1 ? n_slices : n_cand, dim == 1 ? n_cand : n_slices);
+    THIntTensor *it = transposed ? THIntTensor_newTranspose(ib, 0, 1) : THIntTensor_newClone(ib);
+    THIntTensor_zero(it);
+    THFloatTensor *ft = THFloatTensor_newWithSize2d(THIntTensor_size(it, 0), THIntTensor_size(it, 1));
+    for (long s = 0; s < n_slices; s++) {
+      long a = (s * 7) % 400, b = a + 1 + (s * 13) % 500;   /* a < b */
+      long c = 450 + s % 50, d = c + 3 + s;                 /* c < d, both < cols */
+      long cand[4] = {a, b, c, d};
+      int val[4] = {5, 5, -5, -5};
+      for (int k = 0; k < 4; k++) {
+        long i = dim == 1 ? s : cand[k], j = dim == 1 ? cand[k] : s;
+        THIntTensor_set2d(it, i, j, val[k]);
+      }
+    }
+    THFloatTensor_copyInt(ft, it);
+
+    THIntTensor *iv = THIntTensor_new(); THFloatTensor *fv = THFloatTensor_new();
+    THLongTensor *ii = THLongTensor_new(), *fi = THLongTensor_new();
+    for (int want_max = 0; want_max < 2; want_max++) {
+      if (want_max) { THIntTensor_max(iv, ii, it, dim, keepdim); THFloatTensor_max(fv, fi, ft, dim, keepdim); }
+      else          { THIntTensor_min(iv, ii, it, dim, keepdim); THFloatTensor_min(fv, fi, ft, dim, keepdim); }
+      int ok = 1;
+      for (long s = 0; s < n_slices && ok; s++) {
+        long a = (s * 7) % 400, c = 450 + s % 50;
+        long expect = want_max ? a : c;           /* the lower of the two ties */
+        long gi = THLongTensor_data(ii)[s], gf = THLongTensor_data(fi)[s];
+        ok = gi == expect && gf == expect;
+        CHECK(ok, "%s ties: transposed=%d dim=%d keepdim=%d slice %ld: int idx %ld, float idx %ld, want %ld",
+              want_max ? "max" : "min", transposed, dim, keepdim, s, gi, gf, expect);
+      }
+    }
+    THIntTensor_free(ib); THIntTensor_free(it); THFloatTensor_free(ft);
+    THIntTensor_free(iv); THFloatTensor_free(fv); THLongTensor_free(ii); THLongTensor_free(fi);
+  }
+}
+
 static void misc_suite(void)
 {
   RUN(misc_shape_errors);
   RUN(misc_known_issue_same_numel_flattens);
   RUN(misc_copy_cross_type);
+  RUN(misc_max_min_ties_lowest_index);
 }
 
 /* ------------------------------------------------------------------------ */
