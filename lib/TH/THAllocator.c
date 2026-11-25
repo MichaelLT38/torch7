@@ -129,18 +129,18 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
     {
       hfile = CreateFileA(ctx->filename, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_WRITE|FILE_SHARE_READ, 0, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
       if (hfile == INVALID_HANDLE_VALUE)
-        THError("could not open file <%s> in read-write mode; error code: <%d>", ctx->filename, GetLastError());
+        THError("could not open file <%s> in read-write mode; error code: <%lu>", ctx->filename, GetLastError());
     }
     else
     {
       hfile = CreateFileA(ctx->filename, GENERIC_READ, FILE_SHARE_WRITE|FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
       if (hfile == INVALID_HANDLE_VALUE)
-        THError("could not open file <%s> in read-only mode; error code: <%d>", ctx->filename, GetLastError());
+        THError("could not open file <%s> in read-only mode; error code: <%lu>", ctx->filename, GetLastError());
     }
 
     if (GetFileSizeEx(hfile, &hfilesz) == 0)
     {
-      THError("could not get file size: <%s>; error code: <%d>", ctx->filename, GetLastError());
+      THError("could not get file size: <%s>; error code: <%lu>", ctx->filename, GetLastError());
     }
 
     if(size > 0)
@@ -153,18 +153,18 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
           if(SetFilePointerEx(hfile, hfilesz, NULL, FILE_BEGIN) == 0)
           {
             CloseHandle(hfile);
-            THError("unable to stretch file <%s> to the right size; error code: <%d>", ctx->filename, GetLastError());
+            THError("unable to stretch file <%s> to the right size; error code: <%lu>", ctx->filename, GetLastError());
           }
           if(SetEndOfFile(hfile) == 0)
           {
             CloseHandle(hfile);
-            THError("unable to write to file <%s>; error code: <%d>", ctx->filename, GetLastError());
+            THError("unable to write to file <%s>; error code: <%lu>", ctx->filename, GetLastError());
           }
         }
         else
         {
           CloseHandle(hfile);
-          THError("file <%s> size is smaller than the required mapping size <%ld>; error code: <%d>", ctx->filename, size, GetLastError());
+          THError("file <%s> size is smaller than the required mapping size <%" PRId64 ">; error code: <%lu>", ctx->filename, size, GetLastError());
         }
       }
     }
@@ -179,12 +179,12 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
     if(ctx->flags)
     {
       if( (hmfile = CreateFileMapping(hfile, NULL, PAGE_READWRITE, hfilesz.HighPart, hfilesz.LowPart, NULL)) == NULL )
-        THError("could not create a map on file <%s>; error code: <%d>", ctx->filename, GetLastError());
+        THError("could not create a map on file <%s>; error code: <%lu>", ctx->filename, GetLastError());
     }
     else
     {
       if( (hmfile = CreateFileMapping(hfile, NULL, PAGE_WRITECOPY, hfilesz.HighPart, hfilesz.LowPart, NULL)) == NULL )
-        THError("could not create a map on file <%s>; error code: <%d>", ctx->filename, GetLastError());
+        THError("could not create a map on file <%s>; error code: <%lu>", ctx->filename, GetLastError());
     }
 
     /* map the stuff */
@@ -271,7 +271,7 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
         else
         {
           close(fd);
-          THError("file <%s> size is smaller than the required mapping size <%ld>", ctx->filename, size);
+          THError("file <%s> size is smaller than the required mapping size <%" PRId64 ">", ctx->filename, size);
         }
       }
     }

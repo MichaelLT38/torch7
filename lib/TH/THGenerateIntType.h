@@ -3,7 +3,7 @@
 #endif
 
 #define real int
-#define accreal long
+#define accreal int64_t
 #define TH_CONVERT_REAL_TO_ACCREAL(_val) (accreal)(_val)
 #define TH_CONVERT_ACCREAL_TO_REAL(_val) (real)(_val)
 #define Real Int

@@ -265,7 +265,7 @@ void* THAlloc(ptrdiff_t size)
   }
 
   if(!ptr)
-    THError("$ Torch: not enough memory: you tried to allocate %dGB. Buy new RAM!", size/1073741824);
+    THError("$ Torch: not enough memory: you tried to allocate %tdGB. Buy new RAM!", size/1073741824);
 
   return ptr;
 }
@@ -293,7 +293,7 @@ void* THRealloc(void *ptr, ptrdiff_t size)
   }
 
   if(!newptr)
-    THError("$ Torch: not enough memory: you tried to reallocate %dGB. Buy new RAM!", size/1073741824);
+    THError("$ Torch: not enough memory: you tried to reallocate %tdGB. Buy new RAM!", size/1073741824);
 
   // update heapSize only after successfully reallocated
   THHeapUpdate(oldSize + getAllocSize(newptr));
@@ -352,7 +352,7 @@ TH_API void THInferNumThreads(void)
 #endif
 }
 
-TH_API THDescBuff _THSizeDesc(const long *size, const long ndim) {
+TH_API THDescBuff _THSizeDesc(const int64_t *size, const int64_t ndim) {
   const int L = TH_DESC_BUFF_LEN;
   THDescBuff buf;
   char *str = buf.str;
@@ -361,7 +361,7 @@ TH_API THDescBuff _THSizeDesc(const long *size, const long ndim) {
   int i;
   for(i = 0; i < ndim; i++) {
     if(n >= L) break;
-    n += snprintf(str+n, L-n, "%ld", size[i]);
+    n += snprintf(str+n, L-n, "%" PRId64 "", size[i]);
     if(i < ndim-1) {
       n += snprintf(str+n, L-n, " x ");
     }

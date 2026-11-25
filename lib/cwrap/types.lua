@@ -32,7 +32,7 @@ argtypes.index = {
    declare = function(arg)
                 -- if it is a number we initialize here
                 local default = tonumber(interpretdefaultvalue(arg)) or 1
-                return string.format("long arg%d = %d;", arg.i, tonumber(default)-1)
+                return string.format("int64_t arg%d = %d;", arg.i, tonumber(default)-1)
            end,
 
    check = function(arg, idx)
@@ -40,7 +40,7 @@ argtypes.index = {
            end,
 
    read = function(arg, idx)
-             return string.format("arg%d = (long)lua_tonumber(L, %d)-1;", arg.i, idx)
+             return string.format("arg%d = (int64_t)lua_tonumber(L, %d)-1;", arg.i, idx)
           end,
 
    init = function(arg)
@@ -74,7 +74,13 @@ argtypes.index = {
               end
 }
 
-for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long", "float", "double"}) do
+-- The argtype name "long" is kept for compatibility with existing wrapper
+-- scripts, but Torch sizes and LongTensor values are 64-bit on every platform
+-- (C `long` is only 32 bits on Windows), so it generates int64_t.
+local ctypes = {long = "int64_t"}
+
+for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long", "int64_t", "float", "double"}) do
+   local ctype = ctypes[typename] or typename
    argtypes[typename] = {
 
       helpname = function(arg)
@@ -84,7 +90,7 @@ for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long
       declare = function(arg)
                    -- if it is a number we initialize here
                    local default = tonumber(interpretdefaultvalue(arg)) or 0
-                   return string.format("%s arg%d = %g;", typename, arg.i, default)
+                   return string.format("%s arg%d = %g;", ctype, arg.i, default)
                 end,
 
       check = function(arg, idx)
@@ -92,7 +98,7 @@ for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long
               end,
 
       read = function(arg, idx)
-                return string.format("arg%d = (%s)lua_tonumber(L, %d);", arg.i, typename, idx)
+                return string.format("arg%d = (%s)lua_tonumber(L, %d);", arg.i, ctype, idx)
              end,
 
       init = function(arg)

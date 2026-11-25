@@ -27,8 +27,22 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-`ctest` runs the TH C test suites (`th.<type>`, `th.misc`) and the Lua suite
-(`lua.torch`). Without LAPACK, the 21 LAPACK-only Lua tests are skipped and listed.
+`ctest` runs the TH C test suites (`th.<type>`, `th.misc`, `th.large`) and the Lua
+suites (`lua.torch`, `lua.int64`). Without LAPACK, the 21 LAPACK-only Lua tests are
+skipped and listed. `th.large` needs about 2 GB of RAM and skips itself if the
+allocation fails.
+
+### Compatibility with upstream torch7
+
+* **64-bit sizes everywhere.** Sizes, strides, indices and `LongTensor`/`LongStorage`
+  values are `int64_t` on every platform. Upstream used C `long`, which is only
+  32 bits on Windows, so Windows builds were limited to 2^31 elements.
+* **Binary files store longs as 8 bytes on every platform** (as Linux and macOS
+  always did). Files written in binary mode by an upstream *Windows* build used
+  4-byte longs; read them with `file:longSize(4)`.
+* `LongTensor:random()` *with no arguments* on Windows now gives the same values as
+  on Linux (upstream reduced them modulo 2^31 on Windows). Every other random
+  stream is unchanged.
 
 Installing with luarocks still works: `luarocks make rocks/torch-scm-1.rockspec`.
 

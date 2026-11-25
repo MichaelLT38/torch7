@@ -3,7 +3,7 @@
 #endif
 
 #define real char
-#define accreal long
+#define accreal int64_t
 #define Real Char
 #define THInf CHAR_MAX
 #define TH_CONVERT_REAL_TO_ACCREAL(_val) (accreal)(_val)

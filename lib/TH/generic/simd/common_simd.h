@@ -1,3 +1,4 @@
+#include <stdint.h>
 #ifndef COMMON_SIMD_H
 #define COMMON_SIMD_H
 

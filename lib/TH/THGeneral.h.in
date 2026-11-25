@@ -10,6 +10,8 @@
 #include <time.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <inttypes.h>  /* PRId64: sizes, strides and indices are int64_t */
 
 #cmakedefine USE_BLAS
 #cmakedefine USE_LAPACK
@@ -50,12 +52,17 @@ typedef struct {
 
 
 TH_API double THLog1p(const double x);
-TH_API THDescBuff _THSizeDesc(const long *size, const long ndim);
-TH_API void _THError(const char *file, const int line, const char *fmt, ...);
-TH_API void _THAssertionFailed(const char *file, const int line, const char *exp, const char *fmt, ...);
+TH_API THDescBuff _THSizeDesc(const int64_t *size, const int64_t ndim);
+/* printf-style (C99 rules via gnu_printf, which also covers MinGW/UCRT):
+   GCC checks every format string against its arguments. */
+TH_API void _THError(const char *file, const int line, const char *fmt, ...)
+  __attribute__((format(gnu_printf, 3, 4)));
+TH_API void _THAssertionFailed(const char *file, const int line, const char *exp, const char *fmt, ...)
+  __attribute__((format(gnu_printf, 4, 5)));
 TH_API void THSetErrorHandler(THErrorHandlerFunction new_handler, void *data);
 TH_API void THSetDefaultErrorHandler(THErrorHandlerFunction new_handler, void *data);
-TH_API void _THArgCheck(const char *file, int line, int condition, int argNumber, const char *fmt, ...);
+TH_API void _THArgCheck(const char *file, int line, int condition, int argNumber, const char *fmt, ...)
+  __attribute__((format(gnu_printf, 5, 6)));
 TH_API void THSetArgErrorHandler(THArgErrorHandlerFunction new_handler, void *data);
 TH_API void THSetDefaultArgErrorHandler(THArgErrorHandlerFunction new_handler, void *data);
 TH_API void* THAlloc(ptrdiff_t size);
@@ -87,7 +94,7 @@ do if (!(condition)) {                                                \
 #define THAssert(exp)                                                 \
 do {                                                                  \
   if (!(exp)) {                                                       \
-    _THAssertionFailed(__FILE__, __LINE__, #exp, "");                 \
+    _THAssertionFailed(__FILE__, __LINE__, #exp, "%s", "");           \
   }                                                                   \
 } while(0)
 

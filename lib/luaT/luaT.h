@@ -6,6 +6,7 @@ extern "C" {
 #endif
 #include <lua.h>
 #include <lauxlib.h>
+#include <stdint.h>
 #ifdef __cplusplus
 }
 #endif
@@ -69,9 +70,9 @@ LUAT_API void *luaT_toudata(lua_State *L, int ud, const char *tname);
 LUAT_API int luaT_isudata(lua_State *L, int ud, const char *tname);
 LUAT_API void *luaT_checkudata(lua_State *L, int ud, const char *tname);
 
-LUAT_API void luaT_pushlong(lua_State *L, long n);
-LUAT_API long luaT_checklong(lua_State *L, int idx);
-LUAT_API long luaT_tolong(lua_State *L, int idx);
+LUAT_API void luaT_pushlong(lua_State *L, int64_t n);
+LUAT_API int64_t luaT_checklong(lua_State *L, int idx);
+LUAT_API int64_t luaT_tolong(lua_State *L, int idx);
 
 LUAT_API void luaT_pushinteger(lua_State *L, ptrdiff_t n);
 LUAT_API ptrdiff_t luaT_checkinteger(lua_State *L, int idx);

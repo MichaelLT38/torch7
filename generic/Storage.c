@@ -240,7 +240,7 @@ static int torch_Storage_(write)(lua_State *L)
   THFile *file = luaT_checkudata(L, 2, "torch.File");
 
 #ifdef DEBUG
-  THAssert(storage->size < LONG_MAX);
+  THAssert(storage->size < INT64_MAX);
 #endif
   THFile_writeLongScalar(file, storage->size);
   THFile_writeRealRaw(file, storage->data, storage->size);

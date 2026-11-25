@@ -36,7 +36,7 @@ TH_API int THGenerator_isValid(THGenerator *_generator);
 platforms with the current time (granularity: seconds)) and returns the seed. */
 TH_API unsigned long THRandom_seed(THGenerator *_generator);
 
-/* Initializes the random number generator with the given long "the_seed_". */
+/* Initializes the random number generator with the given "the_seed_". */
 TH_API void THRandom_manualSeed(THGenerator *_generator, unsigned long the_seed_);
 
 /* Returns the starting seed used. */

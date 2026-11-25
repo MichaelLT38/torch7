@@ -25,7 +25,7 @@ struct THFileVTable
     size_t (*readChar)(THFile *self, char *data, size_t n);
     size_t (*readShort)(THFile *self, short *data, size_t n);
     size_t (*readInt)(THFile *self, int *data, size_t n);
-    size_t (*readLong)(THFile *self, long *data, size_t n);
+    size_t (*readLong)(THFile *self, int64_t *data, size_t n);
     size_t (*readFloat)(THFile *self, float *data, size_t n);
     size_t (*readDouble)(THFile *self, double *data, size_t n);
     size_t (*readHalf)(THFile *self, THHalf *data, size_t n);
@@ -35,7 +35,7 @@ struct THFileVTable
     size_t (*writeChar)(THFile *self, char *data, size_t n);
     size_t (*writeShort)(THFile *self, short *data, size_t n);
     size_t (*writeInt)(THFile *self, int *data, size_t n);
-    size_t (*writeLong)(THFile *self, long *data, size_t n);
+    size_t (*writeLong)(THFile *self, int64_t *data, size_t n);
     size_t (*writeFloat)(THFile *self, float *data, size_t n);
     size_t (*writeDouble)(THFile *self, double *data, size_t n);
     size_t (*writeHalf)(THFile *self, THHalf *data, size_t n);

@@ -145,7 +145,7 @@ static int THMemoryFile_mode(const char *mode, int *isReadable, int *isWritable)
     {                                                                   \
       mfself->file.hasError = 1; /* shouldn't we put hasError to 0 all the time ? */ \
       if(!mfself->file.isQuiet)                                         \
-        THError("read error: read %d blocks instead of %d", nread, n);  \
+        THError("read error: read %zu blocks instead of %zu", nread, n);  \
     }                                                                   \
                                                                         \
     return nread;                                                       \
@@ -351,7 +351,7 @@ READ_WRITE_METHODS(double, Double,
 
 int THDiskFile_isLittleEndianCPU(void);
 
-static size_t THMemoryFile_readLong(THFile *self, long *data, size_t n)
+static size_t THMemoryFile_readLong(THFile *self, int64_t *data, size_t n)
 {
   THMemoryFile *mfself = (THMemoryFile*)self;
   size_t nread = 0L;
@@ -364,13 +364,13 @@ static size_t THMemoryFile_readLong(THFile *self, long *data, size_t n)
 
   if(mfself->file.isBinary)
   {
-    if(mfself->longSize == 0 || mfself->longSize == sizeof(long))
+    if(mfself->longSize == 0 || mfself->longSize == sizeof(int64_t))
     {
-      size_t nByte = sizeof(long)*n;
+      size_t nByte = sizeof(int64_t)*n;
       size_t nByteRemaining = (mfself->position + nByte <= mfself->size ? nByte : mfself->size-mfself->position);
-      nread = nByteRemaining/sizeof(long);
-      memmove(data, mfself->storage->data+mfself->position, nread*sizeof(long));
-      mfself->position += nread*sizeof(long);
+      nread = nByteRemaining/sizeof(int64_t);
+      memmove(data, mfself->storage->data+mfself->position, nread*sizeof(int64_t));
+      mfself->position += nread*sizeof(int64_t);
     } else if(mfself->longSize == 4)
     {
       size_t nByte = 4*n;
@@ -403,7 +403,7 @@ static size_t THMemoryFile_readLong(THFile *self, long *data, size_t n)
       size_t nByteRead = 0;
       char spaceChar = 0;
       char *spacePtr = THMemoryFile_strnextspace(mfself->storage->data+mfself->position, &spaceChar);
-      int nByteRead_; int ret = sscanf(mfself->storage->data+mfself->position, "%ld%n", &data[i], &nByteRead_); nByteRead = nByteRead_; if(ret <= 0) break; else nread++;
+      int nByteRead_; int ret = sscanf(mfself->storage->data+mfself->position, "%" PRId64 "%n", &data[i], &nByteRead_); nByteRead = nByteRead_; if(ret <= 0) break; else nread++;
       if(ret == EOF)
       {
         while(mfself->storage->data[mfself->position])
@@ -425,13 +425,13 @@ static size_t THMemoryFile_readLong(THFile *self, long *data, size_t n)
   {
     mfself->file.hasError = 1; /* shouldn't we put hasError to 0 all the time ? */
     if(!mfself->file.isQuiet)
-      THError("read error: read %d blocks instead of %d", nread, n);
+      THError("read error: read %zu blocks instead of %zu", nread, n);
   }
 
   return nread;
 }
 
-static size_t THMemoryFile_writeLong(THFile *self, long *data, size_t n)
+static size_t THMemoryFile_writeLong(THFile *self, int64_t *data, size_t n)
 {
   THMemoryFile *mfself = (THMemoryFile*)self;
 
@@ -443,9 +443,9 @@ static size_t THMemoryFile_writeLong(THFile *self, long *data, size_t n)
 
   if(mfself->file.isBinary)
   {
-    if(mfself->longSize == 0 || mfself->longSize == sizeof(long))
+    if(mfself->longSize == 0 || mfself->longSize == sizeof(int64_t))
     {
-      size_t nByte = sizeof(long)*n;
+      size_t nByte = sizeof(int64_t)*n;
       THMemoryFile_grow(mfself, mfself->position+nByte);
       memmove(mfself->storage->data+mfself->position, data, nByte);
       mfself->position += nByte;
@@ -487,7 +487,7 @@ static size_t THMemoryFile_writeLong(THFile *self, long *data, size_t n)
       ssize_t nByteWritten;
       while (1)
       {
-        nByteWritten = snprintf(mfself->storage->data+mfself->position, mfself->storage->size-mfself->position, "%ld", data[i]);
+        nByteWritten = snprintf(mfself->storage->data+mfself->position, mfself->storage->size-mfself->position, "%" PRId64 "", data[i]);
         if( (nByteWritten > -1) && (nByteWritten < mfself->storage->size-mfself->position) )
         {
           mfself->position += nByteWritten;

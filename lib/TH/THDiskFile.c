@@ -77,7 +77,7 @@ size_t fread__(void *ptr, size_t size, size_t nitems, FILE *stream)
     {                                                                   \
       dfself->file.hasError = 1; /* shouldn't we put hasError to 0 all the time ? */ \
       if(!dfself->file.isQuiet)                                         \
-        THError("read error: read %d blocks instead of %d", nread, n);  \
+        THError("read error: read %zu blocks instead of %zu", nread, n);  \
     }                                                                   \
                                                                         \
     return nread;                                                       \
@@ -127,7 +127,7 @@ size_t fread__(void *ptr, size_t size, size_t nitems, FILE *stream)
     {                                                                   \
       dfself->file.hasError = 1;                                        \
       if(!dfself->file.isQuiet)                                         \
-        THError("write error: wrote %d blocks instead of %d", nwrite, n); \
+        THError("write error: wrote %zu blocks instead of %zu", nwrite, n); \
     }                                                                   \
                                                                         \
     return nwrite;                                                      \
@@ -175,12 +175,9 @@ static void THDiskFile_seek(THFile *self, size_t position)
 
   THArgCheck(dfself->handle != NULL, 1, "attempt to use a closed file");
 
-#if defined(_WIN64)
+#if defined(_WIN32)
   THArgCheck(position <= (size_t)INT64_MAX, 2, "position must be smaller than INT64_MAX");
   if(_fseeki64(dfself->handle, (__int64)position, SEEK_SET) < 0)
-#elif defined(_WIN32)
-  THArgCheck(position <= (size_t)LONG_MAX, 2, "position must be smaller than LONG_MAX");
-  if(fseek(dfself->handle, (long)position, SEEK_SET) < 0)
 #else
   THArgCheck(position <= (size_t)LLONG_MAX, 2, "position must be smaller than LLONG_MAX");
   if(fseeko(dfself->handle, (off_t)position, SEEK_SET) < 0)
@@ -198,10 +195,8 @@ static void THDiskFile_seekEnd(THFile *self)
 
   THArgCheck(dfself->handle != NULL, 1, "attempt to use a closed file");
 
-#if defined(_WIN64)
+#if defined(_WIN32)
   if(_fseeki64(dfself->handle, 0, SEEK_END) < 0)
-#elif defined(_WIN32)
-  if(fseek(dfself->handle, 0, SEEK_END) < 0)
 #else
   if(fseeko(dfself->handle, 0, SEEK_END) < 0)
 #endif
@@ -217,10 +212,8 @@ static size_t THDiskFile_position(THFile *self)
   THDiskFile *dfself = (THDiskFile*)(self);
   THArgCheck(dfself->handle != NULL, 1, "attempt to use a closed file");
 
-#if defined(_WIN64)
+#if defined(_WIN32)
   __int64 offset = _ftelli64(dfself->handle);
-#elif defined(_WIN32)
-  long offset = ftell(dfself->handle);
 #else
   off_t offset = ftello(dfself->handle);
 #endif
@@ -365,7 +358,7 @@ READ_WRITE_METHODS(double, Double,
 
 
 /* For Long we need to rewrite everything, because of the special management of longSize */
-static size_t THDiskFile_readLong(THFile *self, long *data, size_t n)
+static size_t THDiskFile_readLong(THFile *self, int64_t *data, size_t n)
 {
   THDiskFile *dfself = (THDiskFile*)(self);
   size_t nread = 0L;
@@ -375,11 +368,11 @@ static size_t THDiskFile_readLong(THFile *self, long *data, size_t n)
 
   if(dfself->file.isBinary)
   {
-    if(dfself->longSize == 0 || dfself->longSize == sizeof(long))
+    if(dfself->longSize == 0 || dfself->longSize == sizeof(int64_t))
     {
-      nread = fread__(data, sizeof(long), n, dfself->handle);
-      if(!dfself->isNativeEncoding && (sizeof(long) > 1) && (nread > 0))
-        THDiskFile_reverseMemory(data, data, sizeof(long), nread);
+      nread = fread__(data, sizeof(int64_t), n, dfself->handle);
+      if(!dfself->isNativeEncoding && (sizeof(int64_t) > 1) && (nread > 0))
+        THDiskFile_reverseMemory(data, data, sizeof(int64_t), nread);
     } else if(dfself->longSize == 4)
     {
       nread = fread__(data, 4, n, dfself->handle);
@@ -407,7 +400,7 @@ static size_t THDiskFile_readLong(THFile *self, long *data, size_t n)
     size_t i;
     for(i = 0; i < n; i++)
     {
-      int ret = fscanf(dfself->handle, "%ld", &data[i]); if(ret <= 0) break; else nread++;
+      int ret = fscanf(dfself->handle, "%" PRId64 "", &data[i]); if(ret <= 0) break; else nread++;
     }
     if(dfself->file.isAutoSpacing && (n > 0))
     {
@@ -421,13 +414,13 @@ static size_t THDiskFile_readLong(THFile *self, long *data, size_t n)
   {
     dfself->file.hasError = 1; /* shouldn't we put hasError to 0 all the time ? */
     if(!dfself->file.isQuiet)
-      THError("read error: read %d blocks instead of %d", nread, n);
+      THError("read error: read %zu blocks instead of %zu", nread, n);
   }
 
   return nread;
 }
 
-static size_t THDiskFile_writeLong(THFile *self, long *data, size_t n)
+static size_t THDiskFile_writeLong(THFile *self, int64_t *data, size_t n)
 {
   THDiskFile *dfself = (THDiskFile*)(self);
   size_t nwrite = 0L;
@@ -437,17 +430,17 @@ static size_t THDiskFile_writeLong(THFile *self, long *data, size_t n)
 
   if(dfself->file.isBinary)
   {
-    if(dfself->longSize == 0 || dfself->longSize == sizeof(long))
+    if(dfself->longSize == 0 || dfself->longSize == sizeof(int64_t))
     {
       if(dfself->isNativeEncoding)
       {
-        nwrite = fwrite(data, sizeof(long), n, dfself->handle);
+        nwrite = fwrite(data, sizeof(int64_t), n, dfself->handle);
       }
       else
       {
-        char *buffer = THAlloc(sizeof(long)*n);
-        THDiskFile_reverseMemory(buffer, data, sizeof(long), n);
-        nwrite = fwrite(buffer, sizeof(long), n, dfself->handle);
+        char *buffer = THAlloc(sizeof(int64_t)*n);
+        THDiskFile_reverseMemory(buffer, data, sizeof(int64_t), n);
+        nwrite = fwrite(buffer, sizeof(int64_t), n, dfself->handle);
         THFree(buffer);
       }
     } else if(dfself->longSize == 4)
@@ -482,7 +475,7 @@ static size_t THDiskFile_writeLong(THFile *self, long *data, size_t n)
     size_t i;
     for(i = 0; i < n; i++)
     {
-      int ret = fprintf(dfself->handle, "%ld", data[i]); if(ret <= 0) break; else nwrite++;
+      int ret = fprintf(dfself->handle, "%" PRId64 "", data[i]); if(ret <= 0) break; else nwrite++;
       if( dfself->file.isAutoSpacing && (i < n-1) )
         fprintf(dfself->handle, " ");
     }
@@ -494,7 +487,7 @@ static size_t THDiskFile_writeLong(THFile *self, long *data, size_t n)
   {
     dfself->file.hasError = 1;
     if(!dfself->file.isQuiet)
-      THError("write error: wrote %d blocks instead of %d", nwrite, n);
+      THError("write error: wrote %zu blocks instead of %zu", nwrite, n);
   }
 
   return nwrite;

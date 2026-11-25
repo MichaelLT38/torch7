@@ -165,16 +165,16 @@ local reals = {ByteTensor='unsigned char',
                CharTensor='char',
                ShortTensor='short',
                IntTensor='int',
-               LongTensor='long',
+               LongTensor='int64_t',
                FloatTensor='float',
                HalfTensor='half',
                DoubleTensor='double'}
 
-local accreals = {ByteTensor='long',
-               CharTensor='long',
-               ShortTensor='long',
-               IntTensor='long',
-               LongTensor='long',
+local accreals = {ByteTensor='int64_t',
+               CharTensor='int64_t',
+               ShortTensor='int64_t',
+               IntTensor='int64_t',
+               LongTensor='int64_t',
                FloatTensor='double',
                HalfTensor='float',
                DoubleTensor='double'}
@@ -767,13 +767,13 @@ wrap("topk",
    if Tensor == 'ByteTensor' then -- we declare this only once
       interface:print(
          [[
-static long THRandom_random2__(THGenerator *gen, long a, long b)
+static int64_t THRandom_random2__(THGenerator *gen, int64_t a, int64_t b)
 {
   THArgCheck(b >= a, 2, "upper bound must be larger than lower bound");
   return((THRandom_random(gen) % (b+1-a)) + a);
 }
 
-static long THRandom_random1__(THGenerator *gen, long b)
+static int64_t THRandom_random1__(THGenerator *gen, int64_t b)
 {
   THArgCheck(b > 0, 1, "upper bound must be strictly positive");
   return(THRandom_random(gen) % b + 1);
@@ -783,13 +783,13 @@ static long THRandom_random1__(THGenerator *gen, long b)
 
    interface:print(string.gsub(
                       [[
-static void THTensor_random2__(THTensor *self, THGenerator *gen, long a, long b)
+static void THTensor_random2__(THTensor *self, THGenerator *gen, int64_t a, int64_t b)
 {
   THArgCheck(b >= a, 2, "upper bound must be larger than lower bound");
   TH_TENSOR_APPLY(real, self, *self_data = ((THRandom_random(gen) % (b+1-a)) + a);)
 }
 
-static void THTensor_random1__(THTensor *self, THGenerator *gen, long b)
+static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
 {
   THArgCheck(b > 0, 1, "upper bound must be strictly positive");
   TH_TENSOR_APPLY(real, self, *self_data = (THRandom_random(gen) % b + 1);)
@@ -1075,7 +1075,7 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, long b)
               cname("abs"),
               {{name=Tensor, default=true, returned=true, method={default='nil'}},
                {name=Tensor, method={default=1}}},
-              "labs",
+              "llabs",
               {{name=real},
                {name=real, creturned=true}})
    end
