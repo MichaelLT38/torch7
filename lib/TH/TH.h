@@ -18,6 +18,7 @@
 #include "THTensorApply.h"
 #include "THTensorDimApply.h"
 #include "THIter.h"
+#include "THVectorMath.h"
 
 #include "THFile.h"
 #include "THDiskFile.h"

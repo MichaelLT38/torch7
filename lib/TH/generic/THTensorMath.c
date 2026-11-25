@@ -3375,6 +3375,33 @@ TENSOR_IMPLEMENT_LOGICAL(ne,!=)
       TH_TENSOR_APPLY2(real, t, real, r_, *r__data = CFUNC(*t_data);); \
   }                                                           \
 
+/* Like LAB_IMPLEMENT_BASIC_FUNCTION, but FloatTensor uses the vectorized
+   THFloatVectorMath_VNAME (Phase 3c; within a few ulp of libm, special
+   values via libm) on contiguous runs. Other types: identical to BASIC. */
+#undef LAB_IMPLEMENT_VEC_FUNCTION
+#if defined(TH_REAL_IS_FLOAT)
+#define LAB_IMPLEMENT_VEC_FUNCTION(NAME, CFUNC, VNAME)        \
+  static void THTensor_(NAME##_vecLoop)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
+  {                                                           \
+    (void)ctx_;                                               \
+    if (TH_ITER_CONTIG(s_[0]) && TH_ITER_CONTIG(s_[1])) {     \
+      THFloatVectorMath_##VNAME((float *)d_[0], (const float *)d_[1], n_); \
+      return;                                                 \
+    }                                                         \
+    char *rp_ = d_[0], *xp_ = d_[1];                          \
+    for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1]) \
+      *(real *)rp_ = CFUNC(*(const real *)xp_);               \
+  }                                                           \
+  void THTensor_(NAME)(THTensor *r_, THTensor *t)                \
+  {                                                           \
+    THTensor_(resizeAs)(r_, t);                               \
+    if (!THTensor_(iterate2)(r_, t, THTensor_(NAME##_vecLoop), NULL)) \
+      TH_TENSOR_APPLY2(real, t, real, r_, *r__data = CFUNC(*t_data);); \
+  }
+#else
+#define LAB_IMPLEMENT_VEC_FUNCTION(NAME, CFUNC, VNAME) LAB_IMPLEMENT_BASIC_FUNCTION(NAME, CFUNC)
+#endif
+
 #if defined(TH_REAL_IS_LONG)
 LAB_IMPLEMENT_BASIC_FUNCTION(abs,llabs)
 LAB_IMPLEMENT_BASIC_FUNCTION(neg,-)
@@ -3413,8 +3440,8 @@ TENSOR_IMPLEMENT_LOGICAL_SUM(logicalany, ||, 0)
 LAB_IMPLEMENT_BASIC_FUNCTION(log,TH_MATH_NAME(log))
 LAB_IMPLEMENT_BASIC_FUNCTION(lgamma,TH_MATH_NAME(lgamma))
 LAB_IMPLEMENT_BASIC_FUNCTION(log1p,TH_MATH_NAME(log1p))
-LAB_IMPLEMENT_BASIC_FUNCTION(sigmoid,TH_MATH_NAME(TH_sigmoid))
-LAB_IMPLEMENT_BASIC_FUNCTION(exp,TH_MATH_NAME(exp))
+LAB_IMPLEMENT_VEC_FUNCTION(sigmoid,TH_MATH_NAME(TH_sigmoid),sigmoid)
+LAB_IMPLEMENT_VEC_FUNCTION(exp,TH_MATH_NAME(exp),exp)
 LAB_IMPLEMENT_BASIC_FUNCTION(cos,TH_MATH_NAME(cos))
 LAB_IMPLEMENT_BASIC_FUNCTION(acos,TH_MATH_NAME(acos))
 LAB_IMPLEMENT_BASIC_FUNCTION(cosh,TH_MATH_NAME(cosh))
@@ -3423,7 +3450,7 @@ LAB_IMPLEMENT_BASIC_FUNCTION(asin,TH_MATH_NAME(asin))
 LAB_IMPLEMENT_BASIC_FUNCTION(sinh,TH_MATH_NAME(sinh))
 LAB_IMPLEMENT_BASIC_FUNCTION(tan,TH_MATH_NAME(tan))
 LAB_IMPLEMENT_BASIC_FUNCTION(atan,TH_MATH_NAME(atan))
-LAB_IMPLEMENT_BASIC_FUNCTION(tanh,TH_MATH_NAME(tanh))
+LAB_IMPLEMENT_VEC_FUNCTION(tanh,TH_MATH_NAME(tanh),tanh)
 LAB_IMPLEMENT_BASIC_FUNCTION(sqrt,TH_MATH_NAME(sqrt))
 LAB_IMPLEMENT_BASIC_FUNCTION(rsqrt,TH_MATH_NAME(TH_rsqrt))
 LAB_IMPLEMENT_BASIC_FUNCTION(ceil,TH_MATH_NAME(ceil))

@@ -212,6 +212,58 @@ static void misc_long_values_64bit(void)
   THLongTensor_free(sv); THLongTensor_free(si); THDoubleTensor_free(d);
 }
 
+/* Vectorized float exp/tanh/sigmoid (Phase 3c): dense sweeps over each
+ * function's whole range, including the fast-path boundaries where chunks
+ * switch to libm, must stay within 4 ulp of the double-precision reference;
+ * special values must match libm exactly (NaN-ness, +-inf, +-0 with sign). */
+static void misc_float_vector_math(void)
+{
+  static const struct { const char *name; float lo, hi; } ranges[] = {
+    {"exp", -104.0f, 89.0f}, {"tanh", -50.0f, 50.0f}, {"sigmoid", -110.0f, 110.0f}};
+  const int64_t n = 2000003;   /* odd, so the scalar tail runs too */
+  THFloatTensor *x = THFloatTensor_newWithSize1d(n), *y = THFloatTensor_new();
+  for (int f = 0; f < 3; f++) {
+    float *xd = THFloatTensor_data(x);
+    for (int64_t i = 0; i < n; i++)
+      xd[i] = ranges[f].lo + (ranges[f].hi - ranges[f].lo) * (float)((double)i / (double)(n - 1));
+    if (f == 0) THFloatTensor_exp(y, x);
+    else if (f == 1) THFloatTensor_tanh(y, x);
+    else THFloatTensor_sigmoid(y, x);
+    double worst = 0; float worstX = 0;
+    for (int64_t i = 0; i < n; i++) {
+      double xv = xd[i];
+      double want = f == 0 ? exp(xv) : f == 1 ? tanh(xv) : 1.0 / (1.0 + exp(-xv));
+      double u = th_test_ulps_float(THFloatTensor_data(y)[i], (float)want);
+      if (u > worst) { worst = u; worstX = xd[i]; }
+    }
+    CHECK(worst <= 4, "%s: worst error %g ulp at x = %.9g", ranges[f].name, worst, (double)worstX);
+    printf("    %-8s max error %g ulp over [%g, %g]\n", ranges[f].name, worst,
+           (double)ranges[f].lo, (double)ranges[f].hi);
+  }
+
+  /* special values, each placed inside an otherwise ordinary chunk of 8 */
+  const float specials[] = {NAN, INFINITY, -INFINITY, 0.0f, -0.0f, 1e-30f, -1e-30f, 1e-45f,
+                            88.0f, -87.0f, 88.5f, -87.5f, 44.0f, -44.0f, 0.625f, -0.625f};
+  const int ns = (int)(sizeof(specials) / sizeof(specials[0]));
+  THFloatTensor *s = THFloatTensor_newWithSize1d(8 * ns);
+  for (int k = 0; k < ns; k++)
+    for (int j = 0; j < 8; j++) THFloatTensor_data(s)[8 * k + j] = j == 3 ? specials[k] : 0.5f * (float)j;
+  for (int f = 0; f < 3; f++) {
+    if (f == 0) THFloatTensor_exp(y, s);
+    else if (f == 1) THFloatTensor_tanh(y, s);
+    else THFloatTensor_sigmoid(y, s);
+    for (int k = 0; k < ns; k++) {
+      float xv = specials[k], got = THFloatTensor_data(y)[8 * k + 3];
+      float want = f == 0 ? expf(xv) : f == 1 ? tanhf(xv) : 1.0f / (1.0f + expf(-xv));
+      int ok = isnan(want) ? isnan(got)
+             : (want == 0 || isinf(want)) ? (got == want && signbit(got) == signbit(want))
+             : th_test_ulps_float(got, want) <= 4;
+      CHECK(ok, "%s(%g): got %.9g want %.9g", ranges[f].name, (double)xv, (double)got, (double)want);
+    }
+  }
+  THFloatTensor_free(x); THFloatTensor_free(y); THFloatTensor_free(s);
+}
+
 static void misc_suite(void)
 {
   RUN(misc_shape_errors);
@@ -219,6 +271,7 @@ static void misc_suite(void)
   RUN(misc_copy_cross_type);
   RUN(misc_max_min_ties_lowest_index);
   RUN(misc_long_values_64bit);
+  RUN(misc_float_vector_math);
 }
 
 /* ------------------------------------------------------------------------ */

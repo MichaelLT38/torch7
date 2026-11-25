@@ -1,8 +1,11 @@
 #ifndef _THMATH_H
 #define _THMATH_H
 
+/* For very negative inputs sigmoid(x) = e^x / (1 + e^x) equals e^x to working
+   precision; computing it that way keeps tiny results (where exp(-x) would
+   overflow and 1/(1+inf) flush them to 0). */
 static inline double TH_sigmoid(double value) {
-  return 1.0 / (1.0 + exp(-value));
+  return value < -40.0 ? exp(value) : 1.0 / (1.0 + exp(-value));
 }
 
 static inline double TH_frac(double x) {
@@ -18,7 +21,7 @@ static inline double TH_lerp(double a, double b, double weight) {
 }
 
 static inline float TH_sigmoidf(float value) {
-  return 1.0f / (1.0f + expf(-value));
+  return value < -20.0f ? expf(value) : 1.0f / (1.0f + expf(-value));
 }
 
 static inline float TH_fracf(float x) {

@@ -23,6 +23,9 @@ static int THBlas_cpuHasAvx2Fma(void)
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_cpu_init();
     cached = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    /* TH_NO_AVX2=1 forces the generic kernels (used by the tests) */
+    const char *off = getenv("TH_NO_AVX2");
+    if (off && strcmp(off, "1") == 0) cached = 0;
 #else
     cached = 0;
 #endif
