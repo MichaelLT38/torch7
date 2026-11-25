@@ -66,6 +66,14 @@ void THTensor_(copyTranspose)(THTensor *tensor, THTensor *src) {
   #undef MAX
 }
 
+static void THTensor_(copyIterLoop)(char **d, const int64_t *s, int64_t n, void *ctx)
+{
+  (void)ctx;
+  char *rp = d[0], *sp = d[1];
+  for (int64_t i = 0; i < n; i++, rp += s[0], sp += s[1])
+    *(real *)rp = *(const real *)sp;
+}
+
 void THTensor_(copy)(THTensor *tensor, THTensor *src)
 {
   if (tensor == src) return;
@@ -82,6 +90,14 @@ void THTensor_(copy)(THTensor *tensor, THTensor *src)
   } else if (THTensor_(copyTransposeValid)(tensor, src)) {
     THTensor_(copyTranspose)(tensor, src);
 #endif
+  } else if (THTensor_(isSameSizeAs)(tensor, src) && THTensor_(iterSafe)(tensor, src)) {
+    /* same shape: THIter (coalescing + OpenMP). Copies between different
+       shapes with the same number of elements keep the documented flat
+       element-order semantics below. */
+    THIterOperand ops[2] = {THTensor_(iterOperand)(tensor), THTensor_(iterOperand)(src)};
+    THIter it;
+    THIter_build(&it, 2, ops);
+    THIter_run(&it, THTensor_(copyIterLoop), NULL, 32768);
   } else {
     TH_TENSOR_APPLY2(real, tensor, real, src, *tensor_data = *src_data;)
   }

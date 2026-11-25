@@ -96,6 +96,76 @@
 }
 #endif
 
+/* ---------------------------------------------------------------------------
+ * THIter paths for element-wise ops (Phase 2b).
+ *
+ * Used when every operand has the output's shape (legacy calls with equal
+ * element counts but different shapes keep the old path) and the output does
+ * not partially overlap an input (then traversal order would be observable).
+ * The kernels evaluate exactly the same expression as the legacy
+ * TH_TENSOR_APPLY code, so results are bit-identical; what changes is speed
+ * on strided tensors (dimension coalescing + OpenMP). Fully contiguous calls
+ * keep their existing vectorized paths.
+ * ------------------------------------------------------------------------- */
+#define TH_ITER_GRAIN 32768
+
+static int THTensor_(iterate2)(THTensor *r_, THTensor *a, THIterLoop loop, void *ctx)
+{
+  if (!THTensor_(isSameSizeAs)(r_, a) || !THTensor_(iterSafe)(r_, a)) return 0;
+  THIterOperand ops[2] = {THTensor_(iterOperand)(r_), THTensor_(iterOperand)(a)};
+  THIter it;
+  THIter_build(&it, 2, ops);
+  THIter_run(&it, loop, ctx, TH_ITER_GRAIN);
+  return 1;
+}
+
+static int THTensor_(iterate3)(THTensor *r_, THTensor *a, THTensor *b, THIterLoop loop, void *ctx)
+{
+  if (!THTensor_(isSameSizeAs)(r_, a) || !THTensor_(isSameSizeAs)(r_, b) ||
+      !THTensor_(iterSafe)(r_, a) || !THTensor_(iterSafe)(r_, b)) return 0;
+  THIterOperand ops[3] = {THTensor_(iterOperand)(r_), THTensor_(iterOperand)(a),
+                          THTensor_(iterOperand)(b)};
+  THIter it;
+  THIter_build(&it, 3, ops);
+  THIter_run(&it, loop, ctx, TH_ITER_GRAIN);
+  return 1;
+}
+
+/* Kernel generators: EXPR may use x (and y for binary ops) and value, the
+   real scalar passed through ctx (0 when ctx is NULL). */
+#define TH_ITER_KERNEL2(NAME, EXPR)                                            \
+  static void THTensor_(NAME)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
+  {                                                                           \
+    const real value = ctx_ ? *(const real *)ctx_ : (real)0;                  \
+    (void)value;                                                              \
+    char *rp_ = d_[0], *xp_ = d_[1];                                          \
+    for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1]) {         \
+      const real x = *(const real *)xp_;                                      \
+      *(real *)rp_ = (EXPR);                                                  \
+    }                                                                         \
+  }
+
+#define TH_ITER_KERNEL3(NAME, EXPR)                                            \
+  static void THTensor_(NAME)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
+  {                                                                           \
+    const real value = ctx_ ? *(const real *)ctx_ : (real)0;                  \
+    (void)value;                                                              \
+    char *rp_ = d_[0], *xp_ = d_[1], *yp_ = d_[2];                            \
+    for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1], yp_ += s_[2]) { \
+      const real x = *(const real *)xp_, y = *(const real *)yp_;              \
+      *(real *)rp_ = (EXPR);                                                  \
+    }                                                                         \
+  }
+
+TH_ITER_KERNEL2(addLoop, x + value)
+TH_ITER_KERNEL2(mulLoop, x * value)
+TH_ITER_KERNEL2(divLoop, x / value)
+TH_ITER_KERNEL3(caddLoop, x + value * y)
+TH_ITER_KERNEL3(cmulLoop, x * y)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+TH_ITER_KERNEL3(cdivLoop, x / y)
+#endif
+
 void THTensor_(fill)(THTensor *r_, real value)
 {
   if (THTensor_(isContiguous)(r_) || THTensor_(isTransposed)(r_)) {
@@ -629,7 +699,8 @@ void THTensor_(add)(THTensor *r_, THTensor *t, real value)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
     TH_TENSOR_APPLY2_CONTIG(real, r_, real, t, THVector_(adds)(r__data, t_data, value, r__len););
   } else {
-    TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data + value;);
+    if (!THTensor_(iterate2)(r_, t, THTensor_(addLoop), &value))
+      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data + value;);
   }
 }
 
@@ -644,7 +715,8 @@ void THTensor_(mul)(THTensor *r_, THTensor *t, real value)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
     TH_TENSOR_APPLY2_CONTIG(real, r_, real, t, THVector_(muls)(r__data, t_data, value, r__len););
   } else {
-    TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data * value;);
+    if (!THTensor_(iterate2)(r_, t, THTensor_(mulLoop), &value))
+      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data * value;);
   }
 }
 
@@ -726,7 +798,8 @@ void THTensor_(div)(THTensor *r_, THTensor *t, real value)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(nElement)(r_) == THTensor_(nElement)(t)) {
     TH_TENSOR_APPLY2_CONTIG(real, r_, real, t, THVector_(divs)(r__data, t_data, value, r__len););
   } else {
-    TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data / value;);
+    if (!THTensor_(iterate2)(r_, t, THTensor_(divLoop), &value))
+      TH_TENSOR_APPLY2(real, r_, real, t, *r__data = *t_data / value;);
   }
 }
 
@@ -984,7 +1057,8 @@ void THTensor_(cadd)(THTensor *r_, THTensor *t, real value, THTensor *src)
       TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cadd)(r__data, t_data, src_data, value, r__len););
     }
   } else {
-    TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data + value * *src_data;);
+    if (!THTensor_(iterate3)(r_, t, src, THTensor_(caddLoop), &value))
+      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data + value * *src_data;);
   }
 }
 
@@ -999,7 +1073,8 @@ void THTensor_(cmul)(THTensor *r_, THTensor *t, THTensor *src)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cmul)(r__data, t_data, src_data, r__len););
   } else {
-    TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data * *src_data;);
+    if (!THTensor_(iterate3)(r_, t, src, THTensor_(cmulLoop), NULL))
+      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data * *src_data;);
   }
 }
 
@@ -1033,7 +1108,10 @@ void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cdiv)(r__data, t_data, src_data, r__len););
   } else {
-    TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data / *src_data;);
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+    if (!THTensor_(iterate3)(r_, t, src, THTensor_(cdivLoop), NULL))
+#endif
+      TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data / *src_data;);
   }
 }
 
@@ -3038,11 +3116,16 @@ TENSOR_IMPLEMENT_LOGICAL(ge,>=)
 TENSOR_IMPLEMENT_LOGICAL(eq,==)
 TENSOR_IMPLEMENT_LOGICAL(ne,!=)
 
+/* Unary functions run through THIter (parallel, coalesced; same per-element
+   CFUNC call, so results are unchanged). The legacy loop is kept only for an
+   output that partially overlaps its input. */
 #define LAB_IMPLEMENT_BASIC_FUNCTION(NAME, CFUNC)             \
+  TH_ITER_KERNEL2(NAME##_iterLoop, CFUNC(x))                  \
   void THTensor_(NAME)(THTensor *r_, THTensor *t)                \
   {                                                           \
     THTensor_(resizeAs)(r_, t);                               \
-    TH_TENSOR_APPLY2(real, t, real, r_, *r__data = CFUNC(*t_data);); \
+    if (!THTensor_(iterate2)(r_, t, THTensor_(NAME##_iterLoop), NULL)) \
+      TH_TENSOR_APPLY2(real, t, real, r_, *r__data = CFUNC(*t_data);); \
   }                                                           \
 
 #if defined(TH_REAL_IS_LONG)

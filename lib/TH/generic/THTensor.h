@@ -135,4 +135,10 @@ TH_API real THTensor_(get4d)(const THTensor *tensor, int64_t x0, int64_t x1, int
 TH_API THDescBuff THTensor_(desc)(const THTensor *tensor);
 TH_API THDescBuff THTensor_(sizeDesc)(const THTensor *tensor);
 
+/* THIter support (lib/TH/THIter.h): describe a tensor as an iterator operand,
+   and tell whether an output may be iterated in any order against an input
+   (true unless the two partially overlap with different layouts). */
+TH_API THIterOperand THTensor_(iterOperand)(THTensor *t);
+TH_API int THTensor_(iterSafe)(THTensor *out, THTensor *in);
+
 #endif

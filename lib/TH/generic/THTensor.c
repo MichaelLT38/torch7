@@ -940,4 +940,21 @@ THDescBuff THTensor_(sizeDesc)(const THTensor *tensor) {
   return buf;
 }
 
+THIterOperand THTensor_(iterOperand)(THTensor *t)
+{
+  THIterOperand op;
+  op.data = (char *)THTensor_(data)(t);
+  op.elsize = (int64_t)sizeof(real);
+  op.ndim = t->nDimension;
+  op.size = t->size;
+  op.stride = t->stride;
+  return op;
+}
+
+int THTensor_(iterSafe)(THTensor *out, THTensor *in)
+{
+  THIterOperand a = THTensor_(iterOperand)(out), b = THTensor_(iterOperand)(in);
+  return !THIter_overlaps(&a, &b) || THIter_sameLayout(&a, &b);
+}
+
 #endif
