@@ -609,6 +609,15 @@ function check.areSameFormatTensorsEq(ta, tb, tolerance, negate, storage)
    ta = ensureHasAbs(ta)
    tb = ensureHasAbs(tb)
 
+   -- Tensors with equal element counts but different shapes reach here only
+   -- in the (documented, backwards-compatible) ignore-dimensions mode; compare
+   -- them element by element in order. Element-wise ops broadcast instead of
+   -- flattening, so do the flattening explicitly.
+   if not ta:isSameSizeAs(tb) then
+      ta = ta:contiguous():view(-1)
+      tb = tb:contiguous():view(-1)
+   end
+
    local diff = ta:clone():add(-1, tb):abs()
    local err = diff:max()
    local success = err <= tolerance

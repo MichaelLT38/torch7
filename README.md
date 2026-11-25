@@ -60,6 +60,22 @@ allocation fails.
 * **New:** `arshift` / `carshift` (arithmetic right shift, `floor(x / 2^s)`) and
   `floordiv` / `cfloordiv` (floor division, pairing with `remainder`). `rshift`
   stays a *logical* shift on signed types, as upstream.
+* **Element-wise binary ops broadcast, and mismatched shapes are an error.** Upstream
+  only required the same number of elements, then silently treated both tensors as
+  flat, so `[4 x 4]:cmul([2 x 8])` "worked". Now shapes are matched from the
+  trailing dimension: equal sizes match, a size of 1 stretches, anything else is an
+  error. Equal shapes behave exactly as before. Two cases that used to "work" now
+  raise an error that suggests `:view()`:
+  * same element count, incompatible shapes (`[4 x 4]` with `[2 x 8]`);
+  * same element count but a larger broadcast result (`[784 x 1] + [784]` would
+    become `[784 x 784]`), which is almost always a bug.
+
+  This covers `add`/`csub` and the `+`/`-` operators, `cmul`, `cdiv`, `cpow`,
+  `cfmod`, `cremainder`, `cfloordiv`, `cmax`, `cmin`, `clshift`, `crshift`,
+  `carshift`, `cbitand`, `cbitor`, `cbitxor`, `atan2`, `lerp`, `addcmul`, `addcdiv`,
+  and the tensor forms of `lt`, `le`, `gt`, `ge`, `eq`, `ne`. An in-place call
+  (`a:add(b)`) needs `a` to already have the broadcast shape. `copy` still only
+  needs the same number of elements.
 
 Installing with luarocks still works: `luarocks make rocks/torch-scm-1.rockspec`.
 

@@ -131,6 +131,135 @@ static int THTensor_(iterate3)(THTensor *r_, THTensor *a, THTensor *b, THIterLoo
   return 1;
 }
 
+/* ---------------------------------------------------------------------------
+ * Broadcasting for element-wise ops (Phase 2c). Rule agreed with LatticeAI:
+ *   - equal shapes: unchanged (returns 0; the op's own code runs);
+ *   - broadcast-compatible shapes (NumPy rules): broadcast;
+ *   - incompatible shapes: error, also when the element counts are equal
+ *     (upstream torch7 silently treated those as flat arrays);
+ *   - equal element counts, different shapes, and a *bigger* broadcast result
+ *     (e.g. [784 x 1] and [784] -> [784 x 784]): error, because upstream gave
+ *     a [784 x 1] element-wise result for that call; use :view() to be
+ *     explicit.
+ * The result r_ is resized to the broadcast shape; if r_ is one of the inputs
+ * (in place) the broadcast shape must equal its shape. Inputs that partially
+ * overlap r_ are copied first, so the result never depends on traversal
+ * order. Returns 1 when it computed the result.
+ * ------------------------------------------------------------------------- */
+/* Shape part of the rule: returns 0 if all inputs have the same shape;
+   otherwise raises the agreed errors or writes the broadcast shape (outermost
+   first) and returns 1. */
+static int THTensor_(broadcastShapeChecked)(const char *op, int nin, THTensor **ins,
+                                            int *ndOut, int64_t *shape)
+{
+  int same = 1;
+  for (int k = 1; k < nin; k++)
+    if (!THTensor_(isSameSizeAs)(ins[0], ins[k])) same = 0;
+  if (same) return 0;
+
+  THIterOperand ops[TH_ITER_MAX_OPERANDS];
+  for (int k = 0; k < nin; k++) ops[k] = THTensor_(iterOperand)(ins[k]);
+  int nd = 0;
+  char err[512];
+  int compatible = THIter_broadcastShape(nin, ops, &nd, shape, err, sizeof(err));
+  for (int k = 0; k < nin && compatible; k++)
+    if (THTensor_(nElement)(ins[k]) == 0) compatible = 0;   /* empty never broadcasts */
+
+  /* find a pair of inputs with equal element counts but different shapes */
+  int pi = -1, pj = -1;
+  for (int i = 0; i < nin && pi < 0; i++)
+    for (int j = i + 1; j < nin; j++)
+      if (THTensor_(nElement)(ins[i]) == THTensor_(nElement)(ins[j]) &&
+          !THTensor_(isSameSizeAs)(ins[i], ins[j])) { pi = i; pj = j; break; }
+
+  if (!compatible) {
+    THDescBuff a = THTensor_(sizeDesc)(ins[pi >= 0 ? pi : 0]);
+    THDescBuff b = THTensor_(sizeDesc)(ins[pj >= 0 ? pj : 1]);
+    if (pi >= 0)
+      THError("%s: shapes %s and %s are not broadcastable (they have the same number of "
+              "elements; use :view() to reshape explicitly)", op, a.str, b.str);
+    THError("%s: shapes %s and %s are not broadcastable", op, a.str, b.str);
+  }
+
+  int64_t outNumel = 1;
+  for (int d = 0; d < nd; d++) outNumel *= shape[d];
+  if (pi >= 0 && outNumel > THTensor_(nElement)(ins[pi])) {
+    THDescBuff a = THTensor_(sizeDesc)(ins[pi]), b = THTensor_(sizeDesc)(ins[pj]);
+    THDescBuff o = _THSizeDesc(shape, nd);
+    THError("%s: %s and %s would broadcast to %s; use :view() to make the intent explicit",
+            op, a.str, b.str, o.str);
+  }
+  *ndOut = nd;
+  return 1;
+}
+
+static int THTensor_(broadcastN)(const char *op, THTensor *r_, int nin, THTensor **ins,
+                                 THIterLoop loop, void *ctx)
+{
+  int nd = 0;
+  int64_t shape[TH_ITER_MAX_DIMS];
+  if (!THTensor_(broadcastShapeChecked)(op, nin, ins, &nd, shape)) return 0;
+
+  for (int k = 0; k < nin; k++)
+    if (r_ == ins[k]) {
+      int ok = r_->nDimension == nd;
+      for (int d = 0; ok && d < nd; d++) ok = r_->size[d] == shape[d];
+      if (!ok) {
+        THDescBuff a = THTensor_(sizeDesc)(r_);
+        THDescBuff o = _THSizeDesc(shape, nd);
+        THError("%s: the in-place result %s cannot hold the broadcast shape %s", op, a.str, o.str);
+      }
+    }
+
+  /* copy inputs that partially overlap the result (before resizing r_) */
+  THTensor *use[TH_ITER_MAX_OPERANDS];
+  int cloned[TH_ITER_MAX_OPERANDS];
+  for (int k = 0; k < nin; k++) {
+    cloned[k] = !THTensor_(iterSafe)(r_, ins[k]);
+    use[k] = cloned[k] ? THTensor_(newClone)(ins[k]) : ins[k];
+  }
+
+  THLongStorage *size = THLongStorage_newWithSize(nd);
+  for (int d = 0; d < nd; d++) THLongStorage_data(size)[d] = shape[d];
+  THTensor_(resize)(r_, size, NULL);
+  THLongStorage_free(size);
+
+  THIterOperand iops[TH_ITER_MAX_OPERANDS];
+  iops[0] = THTensor_(iterOperand)(r_);
+  for (int k = 0; k < nin; k++) iops[k + 1] = THTensor_(iterOperand)(use[k]);
+  THIter it;
+  THIter_build(&it, nin + 1, iops);
+  THIter_run(&it, loop, ctx, TH_ITER_GRAIN);
+  for (int k = 0; k < nin; k++)
+    if (cloned[k]) THTensor_(free)(use[k]);
+  return 1;
+}
+
+static int THTensor_(broadcast2)(const char *op, THTensor *r_, THTensor *a, THTensor *b,
+                                 THIterLoop loop, void *ctx)
+{
+  THTensor *ins[2] = {a, b};
+  return THTensor_(broadcastN)(op, r_, 2, ins, loop, ctx);
+}
+
+/* Comparisons with a ByteTensor result (lt/le/gt/ge/eq/ne Tensor): same rule;
+   the result has a different type, so it can never alias an input. */
+static int THTensor_(broadcastCompare)(const char *op, THByteTensor *r_, THTensor *a, THTensor *b,
+                                       THIterLoop loop)
+{
+  THTensor *ins[2] = {a, b};
+  int nd = 0;
+  int64_t shape[TH_ITER_MAX_DIMS];
+  if (!THTensor_(broadcastShapeChecked)(op, 2, ins, &nd, shape)) return 0;
+  THByteTensor_resizeNd(r_, nd, shape, NULL);
+  THIterOperand ops[3] = {THByteTensor_iterOperand(r_), THTensor_(iterOperand)(a),
+                          THTensor_(iterOperand)(b)};
+  THIter it;
+  THIter_build(&it, 3, ops);
+  THIter_run(&it, loop, NULL, TH_ITER_GRAIN);
+  return 1;
+}
+
 /* Kernel generators: EXPR may use x (and y for binary ops) and value, the
    real scalar passed through ctx (0 when ctx is NULL). When the run is
    contiguous for every operand a typed loop is used, which the compiler can
@@ -1117,6 +1246,7 @@ void THTensor_(clamp)(THTensor *r_, THTensor *t, real min_value, real max_value)
 
 void THTensor_(cadd)(THTensor *r_, THTensor *t, real value, THTensor *src)
 {
+  if (THTensor_(broadcast2)("add", r_, t, src, THTensor_(caddLoop), &value)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     if(r_ == t) {
@@ -1132,11 +1262,14 @@ void THTensor_(cadd)(THTensor *r_, THTensor *t, real value, THTensor *src)
 
 void THTensor_(csub)(THTensor *r_, THTensor *t, real value,THTensor *src)
 {
+  real neg = -value;
+  if (THTensor_(broadcast2)("csub", r_, t, src, THTensor_(caddLoop), &neg)) return;
   THTensor_(cadd)(r_, t, -value, src);
 }
 
 void THTensor_(cmul)(THTensor *r_, THTensor *t, THTensor *src)
 {
+  if (THTensor_(broadcast2)("cmul", r_, t, src, THTensor_(cmulLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cmul)(r__data, t_data, src_data, r__len););
@@ -1146,8 +1279,65 @@ void THTensor_(cmul)(THTensor *r_, THTensor *t, THTensor *src)
   }
 }
 
+/* Broadcasting kernels (Phase 2c): the same per-element expressions as each
+   op's legacy loop (also usable with stride-0, i.e. broadcast, operands). */
+#define TH_ITER_KERNEL4(NAME, EXPR)                                            \
+  static void THTensor_(NAME)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
+  {                                                                           \
+    const real value = ctx_ ? *(const real *)ctx_ : (real)0;                  \
+    (void)value;                                                              \
+    char *rp_ = d_[0], *xp_ = d_[1], *yp_ = d_[2], *zp_ = d_[3];              \
+    for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1], yp_ += s_[2], zp_ += s_[3]) { \
+      const real x = *(const real *)xp_, y = *(const real *)yp_, z = *(const real *)zp_; \
+      *(real *)rp_ = (EXPR);                                                  \
+    }                                                                         \
+  }
+
+#if !defined(TH_REAL_IS_HALF)
+TH_ITER_KERNEL3(bcastPowLoop, pow(x, y))
+TH_ITER_KERNEL3(bcastMaxLoop, x > y ? x : y)
+TH_ITER_KERNEL3(bcastMinLoop, x < y ? x : y)
+TH_ITER_KERNEL4(bcastAddcmulLoop, x + value * y * z)
+TH_ITER_KERNEL4(bcastAddcdivLoop, x + value * y / z)
+#endif
+#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+TH_ITER_KERNEL3(bcastDivTruncLoop, THTensor_(divTruncInt)(x, y))
+TH_ITER_KERNEL3(bcastModTruncLoop, THTensor_(modTruncInt)(x, y))
+TH_ITER_KERNEL3(bcastDivFloorLoop, THTensor_(divFloorInt)(x, y))
+TH_ITER_KERNEL3(bcastModFloorLoop, THTensor_(modFloorInt)(x, y))
+TH_ITER_KERNEL3(bcastAndLoop, x & y)
+TH_ITER_KERNEL3(bcastOrLoop, x | y)
+TH_ITER_KERNEL3(bcastXorLoop, x ^ y)
+TH_ITER_KERNEL3(bcastArshiftLoop, (real)(x >> (int)y))
+TH_ITER_KERNEL3(bcastCdivLoop, THTensor_(divTruncInt)(x, y))
+TH_ITER_KERNEL3(bcastCfmodLoop, THTensor_(modTruncInt)(x, y))
+TH_ITER_KERNEL3(bcastCremainderLoop, THTensor_(modFloorInt)(x, y))
+#if defined(TH_REAL_IS_BYTE)
+TH_ITER_KERNEL3(bcastLshiftLoop, (real)(((real)x) << y))
+TH_ITER_KERNEL3(bcastRshiftLoop, (real)(((real)x) >> y))
+#else
+TH_ITER_KERNEL3(bcastLshiftLoop, (real)(((TH_UNSIGNED_REAL)x) << y))
+TH_ITER_KERNEL3(bcastRshiftLoop, (real)(((TH_UNSIGNED_REAL)x) >> y))
+#endif
+#elif defined(TH_REAL_IS_FLOAT)
+TH_ITER_KERNEL3(bcastLshiftLoop, x * powf(2, y))
+TH_ITER_KERNEL3(bcastRshiftLoop, x / powf(2, y))
+#elif defined(TH_REAL_IS_DOUBLE)
+TH_ITER_KERNEL3(bcastLshiftLoop, x * pow(2, y))
+TH_ITER_KERNEL3(bcastRshiftLoop, x / pow(2, y))
+#endif
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+TH_ITER_KERNEL3(bcastFmodLoop, fmod(x, y))
+TH_ITER_KERNEL3(bcastRemainderLoop, (y == 0) ? NAN : x - y * floor(x / y))
+TH_ITER_KERNEL3(bcastFloordivLoop, (real)floor((double)x / (double)y))
+TH_ITER_KERNEL3(bcastCdivLoop, x / y)
+TH_ITER_KERNEL3(bcastCfmodLoop, fmod(x, y))
+TH_ITER_KERNEL3(bcastCremainderLoop, (y == 0) ? NAN : x - y * floor(x / y))
+#endif
+
 void THTensor_(cpow)(THTensor *r_, THTensor *t, THTensor *src)
 {
+  if (THTensor_(broadcast2)("cpow", r_, t, src, THTensor_(bcastPowLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     real *tp = THTensor_(data)(t);
@@ -1168,10 +1358,12 @@ void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
 #if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
   /* integer: reject zero divisors up front; MIN / -1 wraps (see divTruncInt) */
   THTensor_(checkNoZeroDivisor)(src, 3);
+  if (THTensor_(broadcast2)("cdiv", r_, t, src, THTensor_(bcastDivTruncLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(divTruncInt)(*t_data, *src_data););
   return;
 #endif
+  if (THTensor_(broadcast2)("cdiv", r_, t, src, THTensor_(bcastCdivLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cdiv)(r__data, t_data, src_data, r__len););
@@ -1191,6 +1383,7 @@ void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
 #if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
   THTensor_(checkShiftAmounts)(src, 3);
 #endif
+  if (THTensor_(broadcast2)("clshift", r_, t, src, THTensor_(bcastLshiftLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1234,6 +1427,7 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
 #if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
   THTensor_(checkShiftAmounts)(src, 3);
 #endif
+  if (THTensor_(broadcast2)("crshift", r_, t, src, THTensor_(bcastRshiftLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1297,6 +1491,7 @@ void THTensor_(carshift)(THTensor *r_, THTensor *t, THTensor *src)
           TH_CONCAT_STRING_3(torch., Real, Tensor));
 #else
   THTensor_(checkShiftAmounts)(src, 3);
+  if (THTensor_(broadcast2)("carshift", r_, t, src, THTensor_(bcastArshiftLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = (real)(*t_data >> (int)*src_data););
 #endif
@@ -1328,11 +1523,13 @@ void THTensor_(cfloordiv)(THTensor *r_, THTensor *t, THTensor *src)
   (void)r_; (void)t; (void)src;
   THError("cfloordiv is not supported for torch.HalfTensor");
 #elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+  if (THTensor_(broadcast2)("cfloordiv", r_, t, src, THTensor_(bcastFloordivLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY3(real, r_, real, t, real, src,
                    *r__data = (real)floor((double)*t_data / (double)*src_data););
 #else
   THTensor_(checkNoZeroDivisor)(src, 3);
+  if (THTensor_(broadcast2)("cfloordiv", r_, t, src, THTensor_(bcastDivFloorLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY3(real, r_, real, t, real, src,
                    *r__data = THTensor_(divFloorInt)(*t_data, *src_data););
@@ -1349,6 +1546,7 @@ void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 #if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
   THTensor_(checkNoZeroDivisor)(src, 3);
 #endif
+  if (THTensor_(broadcast2)("cfmod", r_, t, src, THTensor_(bcastCfmodLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
       real *tp = THTensor_(data)(t);
@@ -1379,6 +1577,7 @@ void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
 #if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
   THTensor_(checkNoZeroDivisor)(src, 3);
 #endif
+  if (THTensor_(broadcast2)("cremainder", r_, t, src, THTensor_(bcastCremainderLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
       real *tp = THTensor_(data)(t);
@@ -1409,6 +1608,7 @@ void THTensor_(cbitand)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
   return THError("cbitand is only supported for integer type tensors");
 #else
+  if (THTensor_(broadcast2)("cbitand", r_, t, src, THTensor_(bcastAndLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1434,6 +1634,7 @@ void THTensor_(cbitor)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
   return THError("cbitor is only supported for integer type tensors");
 #else
+  if (THTensor_(broadcast2)("cbitor", r_, t, src, THTensor_(bcastOrLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1459,6 +1660,7 @@ void THTensor_(cbitxor)(THTensor *r_, THTensor *t, THTensor *src)
 #if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
   return THError("cbitxor is only supported for integer type tensors");
 #else
+  if (THTensor_(broadcast2)("cbitxor", r_, t, src, THTensor_(bcastXorLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   if (THTensor_(isContiguous)(r_) &&
       THTensor_(isContiguous)(t) &&
@@ -1497,6 +1699,10 @@ void THTensor_(tpow)(THTensor *r_, real value, THTensor *t)
 
 void THTensor_(addcmul)(THTensor *r_, THTensor *t, real value, THTensor *src1, THTensor *src2)
 {
+  {
+    THTensor *ins[3] = {t, src1, src2};
+    if (THTensor_(broadcastN)("addcmul", r_, 3, ins, THTensor_(bcastAddcmulLoop), &value)) return;
+  }
   if(r_ != t)
   {
     THTensor_(resizeAs)(r_, t);
@@ -1509,6 +1715,10 @@ void THTensor_(addcmul)(THTensor *r_, THTensor *t, real value, THTensor *src1, T
 
 void THTensor_(addcdiv)(THTensor *r_, THTensor *t, real value, THTensor *src1, THTensor *src2)
 {
+  {
+    THTensor *ins[3] = {t, src1, src2};
+    if (THTensor_(broadcastN)("addcdiv", r_, 3, ins, THTensor_(bcastAddcdivLoop), &value)) return;
+  }
   if(r_ != t)
   {
     THTensor_(resizeAs)(r_, t);
@@ -2419,12 +2629,14 @@ void THTensor_(cross)(THTensor *r_, THTensor *a, THTensor *b, int dimension)
 }
 
 void THTensor_(cmax)(THTensor *r, THTensor *t, THTensor *src) {
+  if (THTensor_(broadcast2)("cmax", r, t, src, THTensor_(bcastMaxLoop), NULL)) return;
   THTensor_(resizeAs)(r, t);
   TH_TENSOR_APPLY3(real, r, real, t, real, src,
                    *r_data = *t_data > *src_data ? *t_data : *src_data;);
 }
 
 void THTensor_(cmin)(THTensor *r, THTensor *t, THTensor *src) {
+  if (THTensor_(broadcast2)("cmin", r, t, src, THTensor_(bcastMinLoop), NULL)) return;
   THTensor_(resizeAs)(r, t);
   TH_TENSOR_APPLY3(real, r, real, t, real, src,
                    *r_data = *t_data < *src_data ? *t_data : *src_data;);
@@ -3349,14 +3561,24 @@ int THTensor_(equal)(THTensor *ta, THTensor* tb)
     TH_TENSOR_APPLY2(real, r_, real, t,					\
 		     *r__data = (*t_data OP value) ? 1 : 0;); \
   }									\
+  static void THTensor_(NAME##CmpLoop)(char **d_, const int64_t *s_, int64_t n_, void *ctx_) \
+  {									\
+    (void)ctx_;								\
+    char *rp_ = d_[0], *xp_ = d_[1], *yp_ = d_[2];			\
+    for (int64_t i_ = 0; i_ < n_; i_++, rp_ += s_[0], xp_ += s_[1], yp_ += s_[2]) \
+      *(unsigned char *)rp_ = (*(const real *)xp_ OP *(const real *)yp_) ? 1 : 0; \
+  }									\
+  TH_ITER_KERNEL3(NAME##CmpTLoop, (x OP y) ? 1 : 0)			\
   void THTensor_(NAME##Tensor)(THByteTensor *r_, THTensor *ta, THTensor *tb) \
   {									\
+    if (THTensor_(broadcastCompare)(#NAME, r_, ta, tb, THTensor_(NAME##CmpLoop))) return; \
     THByteTensor_resizeNd(r_, ta->nDimension, ta->size, NULL);		\
     TH_TENSOR_APPLY3(unsigned char, r_, real, ta, real, tb,		\
 		     *r__data = (*ta_data OP *tb_data) ? 1 : 0;); \
   }									\
   void THTensor_(NAME##TensorT)(THTensor *r_, THTensor *ta, THTensor *tb) \
   {									\
+    if (THTensor_(broadcast2)(#NAME, r_, ta, tb, THTensor_(NAME##CmpTLoop), NULL)) return; \
     THTensor_(resizeNd)(r_, ta->nDimension, ta->size, NULL);		\
     TH_TENSOR_APPLY3(real, r_, real, ta, real, tb,			\
 		     *r__data = (*ta_data OP *tb_data) ? 1 : 0;); \
@@ -3499,14 +3721,20 @@ void THTensor_(pow)(THTensor *r_, THTensor *t, real value)
   }
 }
 
+TH_ITER_KERNEL3(bcastAtan2Loop, TH_MATH_NAME(atan2)(x, y))
+
 void THTensor_(atan2)(THTensor *r_, THTensor *tx, THTensor *ty)
 {
+  if (THTensor_(broadcast2)("atan2", r_, tx, ty, THTensor_(bcastAtan2Loop), NULL)) return;
   THTensor_(resizeAs)(r_, tx);
   TH_TENSOR_APPLY3(real, r_, real, tx, real, ty, *r__data = TH_MATH_NAME(atan2)(*tx_data,*ty_data););
 }
 
+TH_ITER_KERNEL3(bcastLerpLoop, TH_MATH_NAME(TH_lerp)(x, y, value))
+
 void THTensor_(lerp)(THTensor *r_, THTensor *a, THTensor *b, real weight)
 {
+  if (THTensor_(broadcast2)("lerp", r_, a, b, THTensor_(bcastLerpLoop), &weight)) return;
   THArgCheck(THTensor_(nElement)(a) == THTensor_(nElement)(b), 2, "sizes do not match");
   THTensor_(resizeAs)(r_, a);
   TH_TENSOR_APPLY3(real, r_, real, a, real, b, *r__data = TH_MATH_NAME(TH_lerp)(*a_data, *b_data, weight););

@@ -1274,6 +1274,20 @@ function torchtest.pow() -- [res] torch.pow([res,] x)
    mytester:assertlt(maxerr, precision, 'error in torch.pow - non-contiguous')
 end
 
+-- Since broadcasting (Phase 2c), element-wise ops no longer treat operands with
+-- the same number of elements but different shapes as flat arrays. These tests
+-- pair a 10x10 slice with a 100-element vector element by element, so give the
+-- vector the slice's shape explicitly: a view of the same elements in the same
+-- order (strided if the vector is strided, so non-contiguous cases stay so).
+local function asShapeOf(src, like)
+   if src:isContiguous() then return src:view(like:size()) end
+   assert(src:dim() == 1 and like:dim() == 2, "asShapeOf: expects a 1-D source and a 2-D shape")
+   local n = like:size(2)
+   return src.new(src:storage(), src:storageOffset(),
+                  torch.LongStorage{like:size(1), n},
+                  torch.LongStorage{n * src:stride(1), src:stride(1)})
+end
+
 function torchtest.cdiv()
     local types = {
         'torch.ByteTensor',
@@ -1294,7 +1308,7 @@ function torchtest.cdiv()
         m2[m2:eq(0)] = 2
         local sm1 = m1[{4, {}, {}}]
         local sm2 = m2[{4, {}}]
-        local res1 = torch.cdiv(sm1, sm2)
+        local res1 = torch.cdiv(sm1, asShapeOf(sm2, sm1))
         local res2 = res1:clone():zero()
         for i = 1,sm1:size(1) do
             for j = 1, sm1:size(2) do
@@ -1329,7 +1343,7 @@ function torchtest.cdiv()
         m2[m2:eq(0)] = 2
         local sm1 = m1[{{}, 4, {}}]
         local sm2 = m2[{{}, 4}]
-        local res1 = torch.cdiv(sm1, sm2)
+        local res1 = torch.cdiv(sm1, asShapeOf(sm2, sm1))
         local res2 = res1:clone():zero()
         for i = 1,sm1:size(1) do
             for j = 1, sm1:size(2) do
@@ -1366,7 +1380,7 @@ function torchtest.cfmod()
    local m2 = torch.Tensor(10, 10 * 10):uniform(-3, 3)
    local sm1 = m1[{4, {}, {}}]
    local sm2 = m2[{4, {}}]
-   local res1 = torch.cfmod(sm1, sm2)
+   local res1 = torch.cfmod(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -1397,7 +1411,7 @@ function torchtest.cfmod()
    local m2 = torch.Tensor(10 * 10, 10 * 10):uniform(-3, 3)
    local sm1 = m1[{{}, 4, {}}]
    local sm2 = m2[{{}, 4}]
-   local res1 = torch.cfmod(sm1, sm2)
+   local res1 = torch.cfmod(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -1430,7 +1444,7 @@ function torchtest.cremainder()
    local m2 = torch.Tensor(10, 10 * 10):uniform(-3, 3)
    local sm1 = m1[{4, {}, {}}]
    local sm2 = m2[{4, {}}]
-   local res1 = torch.cremainder(sm1, sm2)
+   local res1 = torch.cremainder(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -1461,7 +1475,7 @@ function torchtest.cremainder()
    local m2 = torch.Tensor(10 * 10, 10 * 10):uniform(-3, 3)
    local sm1 = m1[{{}, 4, {}}]
    local sm2 = m2[{{}, 4}]
-   local res1 = torch.cremainder(sm1, sm2)
+   local res1 = torch.cremainder(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -1507,7 +1521,7 @@ function torchtest.cmul()
         local m2 = torch.randn(10, 10 * 10):type(t)
         local sm1 = m1[{4, {}, {}}]
         local sm2 = m2[{4, {}}]
-        local res1 = torch.cmul(sm1, sm2)
+        local res1 = torch.cmul(sm1, asShapeOf(sm2, sm1))
         local res2 = res1:clone():zero()
         for i = 1,sm1:size(1) do
             for j = 1, sm1:size(2) do
@@ -1538,7 +1552,7 @@ function torchtest.cmul()
         local m2 = torch.randn(10 * 10, 10 * 10):type(t)
         local sm1 = m1[{{}, 4, {}}]
         local sm2 = m2[{{}, 4}]
-        local res1 = torch.cmul(sm1, sm2)
+        local res1 = torch.cmul(sm1, asShapeOf(sm2, sm1))
         local res2 = res1:clone():zero()
         for i = 1,sm1:size(1) do
             for j = 1, sm1:size(2) do
@@ -1572,7 +1586,7 @@ function torchtest.cpow()  -- [res] torch.cpow([res,] tensor1, tensor2)
    local m2 = torch.rand(10, 10 * 10)
    local sm1 = m1[{4, {}, {}}]
    local sm2 = m2[{4, {}}]
-   local res1 = torch.cpow(sm1, sm2)
+   local res1 = torch.cpow(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -1603,7 +1617,7 @@ function torchtest.cpow()  -- [res] torch.cpow([res,] tensor1, tensor2)
    local m2 = torch.rand(10 * 10, 10 * 10)
    local sm1 = m1[{{}, 4, {}}]
    local sm2 = m2[{{}, 4}]
-   local res1 = torch.cpow(sm1, sm2)
+   local res1 = torch.cpow(sm1, asShapeOf(sm2, sm1))
    local res2 = res1:clone():zero()
    for i = 1,sm1:size(1) do
       for j = 1, sm1:size(2) do
@@ -3546,7 +3560,7 @@ function torchtest_view(func)
    mytester:assertTableEq(tensor:view(3,-1):size():totable(), target, 'Error in view using dimension -1')
    local tensor_view = tensor:view(5,3)
    tensor_view:fill(torch.rand(1)[1])
-   mytester:asserteq((tensor_view-tensor):abs():max(), 0, 'Error in view')
+   mytester:asserteq((tensor_view:view(-1) - tensor):abs():max(), 0, 'Error in view')
 
    local target_tensor = func(torch.Tensor())
    mytester:assertTableEq(target_tensor:viewAs(tensor, template):size():totable(), target, 'Error in viewAs')
@@ -3555,7 +3569,7 @@ function torchtest_view(func)
    mytester:assertTableEq(target_tensor:view(tensor, -1,5):size():totable(), target, 'Error in view using dimension -1')
    mytester:assertTableEq(target_tensor:view(tensor, 3,-1):size():totable(), target, 'Error in view using dimension -1')
    target_tensor:fill(torch.rand(1)[1])
-   mytester:asserteq((target_tensor-tensor):abs():max(), 0, 'Error in viewAs')
+   mytester:asserteq((target_tensor:view(-1) - tensor):abs():max(), 0, 'Error in viewAs')
 end
 
 function torchtest.expand()

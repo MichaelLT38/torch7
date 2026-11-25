@@ -31,9 +31,8 @@ static int torch_TensorOperator_(__add__)(lua_State *L)
     }
     else
     {
-      THTensor_(resizeAs)(r, tensor1);
-      THTensor_(copy)(r, tensor1);
-      THTensor_(cadd)(r, r, 1, tensor2);
+      /* directly into r, so cadd can size it to the broadcast shape */
+      THTensor_(cadd)(r, tensor1, 1, tensor2);
     }
   }
   return 1;
@@ -66,9 +65,8 @@ static int torch_TensorOperator_(__sub__)(lua_State *L)
     }
     else
     {
-      THTensor_(resizeAs)(r, tensor1);
-      THTensor_(copy)(r, tensor1);
-      THTensor_(cadd)(r, r, -1, tensor2);
+      /* directly into r, so cadd can size it to the broadcast shape */
+      THTensor_(cadd)(r, tensor1, -1, tensor2);
     }
   }
   return 1;

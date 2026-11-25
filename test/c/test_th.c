@@ -63,38 +63,119 @@ static const long tt_shapes[][2] = {{1, 1}, {7, 13}, {64, 33}, {400, 300}};
 /* Non-generic tests                                                        */
 /* ------------------------------------------------------------------------ */
 
-/* Mismatched element counts must raise a TH error, not crash. */
+/* Shape errors (Phase 2c rule, agreed with LatticeAI): incompatible shapes,
+ * incompatible shapes with equal element counts (upstream flattened those),
+ * and the "same element count, bigger broadcast result" case all raise errors
+ * that name the shapes; an in-place result cannot change shape. */
 static void misc_shape_errors(void)
 {
-  THFloatTensor *a = THFloatTensor_newWithSize2d(4, 4);
-  THFloatTensor *b = THFloatTensor_newWithSize2d(1, 4);
   THFloatTensor *r = THFloatTensor_new();
-  THFloatTensor_fill(a, 1); THFloatTensor_fill(b, 1);
-  EXPECT_TH_ERROR(THFloatTensor_cadd(r, a, 1, b), "inconsistent tensor size");
-  EXPECT_TH_ERROR(THFloatTensor_cmul(r, a, b), "inconsistent tensor size");
+  THFloatTensor *a44 = THFloatTensor_newWithSize2d(4, 4), *a28 = THFloatTensor_newWithSize2d(2, 8);
+  THFloatTensor *a3 = THFloatTensor_newWithSize1d(3);
+  THFloatTensor *c = THFloatTensor_newWithSize2d(784, 1), *v = THFloatTensor_newWithSize1d(784);
+  THFloatTensor *row = THFloatTensor_newWithSize2d(1, 4);
+  THFloatTensor_fill(a44, 1); THFloatTensor_fill(a28, 1); THFloatTensor_fill(a3, 1);
+  THFloatTensor_fill(c, 1); THFloatTensor_fill(v, 1); THFloatTensor_fill(row, 1);
+
+  EXPECT_TH_ERROR(THFloatTensor_cadd(r, a44, 1, a3), "are not broadcastable");
+  EXPECT_TH_ERROR(THFloatTensor_cadd(r, a44, 1, a28), "same number of elements");
+  EXPECT_TH_ERROR(THFloatTensor_cmul(r, a44, a28), "use :view()");
+  EXPECT_TH_ERROR(THFloatTensor_cadd(r, c, 1, v), "would broadcast to [784 x 784]");
+  EXPECT_TH_ERROR(THFloatTensor_cadd(r, c, 1, v), "use :view() to make the intent explicit");
+  EXPECT_TH_ERROR(THFloatTensor_cadd(r, c, 1, v), "[784 x 1] and [784]");
+  EXPECT_TH_ERROR(THFloatTensor_cadd(row, row, 1, a44), "in-place result [1 x 4]");
 
   THFloatTensor *m1 = THFloatTensor_newWithSize2d(3, 4), *m2 = THFloatTensor_newWithSize2d(5, 2);
   THFloatTensor_zero(m1); THFloatTensor_zero(m2);
   EXPECT_TH_ERROR(THFloatTensor_addmm(r, 0, r, 1, m1, m2), "size mismatch");
-  THFloatTensor_free(a); THFloatTensor_free(b); THFloatTensor_free(r);
+  THFloatTensor_free(r); THFloatTensor_free(a44); THFloatTensor_free(a28); THFloatTensor_free(a3);
+  THFloatTensor_free(c); THFloatTensor_free(v); THFloatTensor_free(row);
   THFloatTensor_free(m1); THFloatTensor_free(m2);
 }
 
-/* KNOWN ISSUE (to be fixed in Phase 2, broadcasting): operands with the same
- * number of elements but different shapes are silently treated as flat
- * arrays. This test pins today's behavior so the change is deliberate; when
- * broadcasting lands, flip it to EXPECT_TH_ERROR. */
-static void misc_known_issue_same_numel_flattens(void)
+/* Broadcasting results (Phase 2c) against reference loops: (m,1) with (1,n),
+ * a 1-D row with a 2-D tensor, in place, integer exactness, ternary ops, and
+ * an input that overlaps the output (must use the original values). */
+static void misc_broadcasting(void)
 {
-  THFloatTensor *a = THFloatTensor_newWithSize2d(4, 4);
-  THFloatTensor *b = THFloatTensor_newWithSize2d(2, 8);
+  uint64_t rng = 31;
+  const int64_t m = 37, n = 300;   /* m*n above the OpenMP grain */
+  THFloatTensor *col = test_Float_make(L_CONTIG, m, 1, &rng, -1, 1);
+  THFloatTensor *row = test_Float_make(L_TRANSPOSED, 1, n, &rng, 0.5, 2);   /* strided */
   THFloatTensor *r = THFloatTensor_new();
-  THFloatTensor_fill(a, 1);
-  for (int i = 0; i < 16; i++) THFloatTensor_data(b)[i] = (float)i;
-  THFloatTensor_cadd(r, a, 1, b);
-  CHECK(THFloatTensor_size(r, 0) == 4 && THFloatTensor_size(r, 1) == 4, "result takes a's shape");
-  CHECK(THFloatTensor_get2d(r, 1, 0) == 5, "b read as flat: r[1][0] = 1 + b.flat[4]");
-  THFloatTensor_free(a); THFloatTensor_free(b); THFloatTensor_free(r);
+  for (int op = 0; op < 5; op++) {
+    if (op == 0) THFloatTensor_cadd(r, col, 2, row);
+    else if (op == 1) THFloatTensor_cmul(r, col, row);
+    else if (op == 2) THFloatTensor_cdiv(r, col, row);
+    else if (op == 3) THFloatTensor_cmax(r, col, row);
+    else THFloatTensor_lerp(r, col, row, 0.25f);
+    CHECK(THFloatTensor_nDimension(r) == 2 && THFloatTensor_size(r, 0) == m && THFloatTensor_size(r, 1) == n,
+          "op %d: (m,1) with (1,n) gives (m,n)", op);
+    int ok = 1;
+    for (int64_t i = 0; i < m && ok; i++)
+    for (int64_t j = 0; j < n && ok; j++) {
+      float x = THFloatTensor_get2d(col, i, 0), y = THFloatTensor_get2d(row, 0, j);
+      float want = op == 0 ? x + 2 * y : op == 1 ? x * y : op == 2 ? x / y
+                 : op == 3 ? (x > y ? x : y) : x + 0.25f * (y - x);
+      ok = THFloatTensor_get2d(r, i, j) == want;
+      CHECK(ok, "broadcast op %d at (%" PRId64 ",%" PRId64 "): got %g want %g", op, i, j,
+            (double)THFloatTensor_get2d(r, i, j), (double)want);
+    }
+  }
+
+  /* a 1-D vector against a 2-D tensor (trailing dimensions align), in place */
+  THFloatTensor *x = test_Float_make(L_NARROWED, m, n, &rng, -1, 1);
+  THFloatTensor *x0 = THFloatTensor_newClone(x);
+  THFloatTensor *vec = THFloatTensor_newWithSize1d(n);
+  for (int64_t j = 0; j < n; j++) THFloatTensor_set1d(vec, j, (float)j);
+  THFloatTensor_cadd(x, x, 1, vec);
+  int ok = 1;
+  for (int64_t i = 0; i < m && ok; i++)
+  for (int64_t j = 0; j < n && ok; j++) {
+    ok = THFloatTensor_get2d(x, i, j) == THFloatTensor_get2d(x0, i, j) + (float)j;
+    CHECK(ok, "in-place x:add(vec) at (%" PRId64 ",%" PRId64 ")", i, j);
+  }
+
+  /* overlapping input: x += x[0] (row 0 broadcast over x, x[0] itself changes) */
+  THFloatTensor *y = THFloatTensor_newClone(x0);
+  THFloatTensor *y0 = THFloatTensor_newClone(x0);
+  THFloatTensor *first = THFloatTensor_newSelect(y, 0, 0);
+  THFloatTensor_cadd(y, y, 1, first);
+  ok = 1;
+  for (int64_t i = 0; i < m && ok; i++)
+  for (int64_t j = 0; j < n && ok; j++) {
+    ok = THFloatTensor_get2d(y, i, j) == THFloatTensor_get2d(y0, i, j) + THFloatTensor_get2d(y0, 0, j);
+    CHECK(ok, "overlapping x:add(x[1]) at (%" PRId64 ",%" PRId64 ")", i, j);
+  }
+
+  /* ternary: addcmul with all three operands broadcast */
+  THFloatTensor *t = test_Float_make(L_CONTIG, 1, n, &rng, -1, 1);
+  THFloatTensor_addcmul(r, t, 3, col, row);
+  ok = THFloatTensor_size(r, 0) == m && THFloatTensor_size(r, 1) == n;
+  for (int64_t i = 0; i < m && ok; i++)
+  for (int64_t j = 0; j < n && ok; j++) {
+    float want = THFloatTensor_get2d(t, 0, j) + 3 * THFloatTensor_get2d(col, i, 0) * THFloatTensor_get2d(row, 0, j);
+    ok = THFloatTensor_get2d(r, i, j) == want;
+    CHECK(ok, "addcmul broadcast at (%" PRId64 ",%" PRId64 ")", i, j);
+  }
+
+  /* integers stay exact under broadcasting (wrap-around) */
+  THIntTensor *ic = THIntTensor_newWithSize2d(5, 1), *ir = THIntTensor_newWithSize1d(7), *io = THIntTensor_new();
+  for (int i = 0; i < 5; i++) THIntTensor_set2d(ic, i, 0, 2147483600 + i);
+  for (int j = 0; j < 7; j++) THIntTensor_set1d(ir, j, 100 * j - 3);
+  THIntTensor_cadd(io, ic, 1, ir);
+  ok = THIntTensor_size(io, 0) == 5 && THIntTensor_size(io, 1) == 7;
+  for (int i = 0; i < 5 && ok; i++)
+  for (int j = 0; j < 7 && ok; j++) {
+    int want = (int)(uint32_t)((uint32_t)(2147483600 + i) + (uint32_t)(100 * j - 3));
+    ok = THIntTensor_get2d(io, i, j) == want;
+    CHECK(ok, "int broadcast add at (%d,%d): got %d want %d", i, j, THIntTensor_get2d(io, i, j), want);
+  }
+
+  THFloatTensor_free(col); THFloatTensor_free(row); THFloatTensor_free(r);
+  THFloatTensor_free(x); THFloatTensor_free(x0); THFloatTensor_free(vec);
+  THFloatTensor_free(y); THFloatTensor_free(y0); THFloatTensor_free(first); THFloatTensor_free(t);
+  THIntTensor_free(ic); THIntTensor_free(ir); THIntTensor_free(io);
 }
 
 /* Cross-type copies over non-contiguous layouts. */
@@ -302,7 +383,7 @@ static void misc_float_vector_log(void)
 static void misc_suite(void)
 {
   RUN(misc_shape_errors);
-  RUN(misc_known_issue_same_numel_flattens);
+  RUN(misc_broadcasting);
   RUN(misc_copy_cross_type);
   RUN(misc_max_min_ties_lowest_index);
   RUN(misc_long_values_64bit);
