@@ -438,6 +438,7 @@ static int torch_Tensor_(indexCopy)(lua_State *L)
 
   THTensor_(indexCopy)(tensor,dim,index,src);
 
+  lua_settop(L, 1);   /* return self (was: the source tensor) */
   return 1;
 }
 
@@ -462,6 +463,7 @@ static int torch_Tensor_(indexAdd)(lua_State *L)
 
   THTensor_(indexAdd)(tensor,dim,index,src);
 
+  lua_settop(L, 1);   /* return self (was: the source tensor) */
   return 1;
 }
 
@@ -487,6 +489,7 @@ static int torch_Tensor_(indexFill)(lua_State *L)
 
   THTensor_(indexFill)(tensor,dim,index,val);
 
+  lua_settop(L, 1);   /* return self (was: the fill value) */
   return 1;
 }
 
@@ -566,6 +569,7 @@ static int torch_Tensor_(maskedFill)(lua_State *L)
 
   THTensor_(maskedFill)(tensor,mask,val);
 
+  lua_settop(L, 1);   /* return self (was: the fill value) */
   return 1;
 }
 #endif
