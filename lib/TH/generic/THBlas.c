@@ -287,6 +287,176 @@ void THBlas_(ger)(int64_t m, int64_t n, real alpha, real *x, int64_t incx, real 
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Built-in blocked GEMM (Phase 3): C = beta*C + alpha*op(A)*op(B),
+ * column-major like BLAS. Used for floating point when TH is built without
+ * BLAS, and always for integer types.
+ *
+ * Classic packed layout: panels of A (MC x KC) and B (KC x NC) are copied
+ * into contiguous micro-panels, and a register-blocked micro-kernel computes
+ * an MR x NR tile of C with GCC vector extensions (NR = two 32-byte
+ * vectors). The kernel is compiled twice, generic and AVX2+FMA, and chosen
+ * at run time (MinGW has no ifunc, so target_clones is not available).
+ * Threads split the rows of C; each C element is accumulated in the same
+ * order whatever the thread count.
+ *
+ * Integer types stay bit-exact: wrap-around (two's-complement) addition and
+ * multiplication give the same result in any order. Floating-point results
+ * differ from the naive loop by rounding only.
+ * ------------------------------------------------------------------------- */
+#define THGEMM_VL ((int64_t)(THGEMM_VBYTES / sizeof(real)))
+#define THGEMM_NR (2 * THGEMM_VL)
+
+typedef real THBlas_(GemmVec) __attribute__((vector_size(THGEMM_VBYTES)));
+
+/* rows [i0, i0+mc) x depth [p0, p0+kc) of op(A), as MR-row micro-panels */
+static void THBlas_(gemmPackA)(int transa, const real *a, int64_t lda, int64_t i0, int64_t p0,
+                               int64_t mc, int64_t kc, real *buf)
+{
+  for (int64_t ir = 0; ir < mc; ir += THGEMM_MR) {
+    const int64_t mr = mc - ir < THGEMM_MR ? mc - ir : THGEMM_MR;
+    for (int64_t p = 0; p < kc; p++) {
+      const int64_t l = p0 + p;
+      for (int64_t r = 0; r < THGEMM_MR; r++) {
+        const int64_t i = i0 + ir + r;
+        *buf++ = r < mr ? (transa ? a[l + i * lda] : a[i + l * lda]) : (real)0;
+      }
+    }
+  }
+}
+
+/* depth [p0, p0+kc) x columns [j0, j0+nc) of op(B), as NR-column micro-panels */
+static void THBlas_(gemmPackB)(int transb, const real *b, int64_t ldb, int64_t p0, int64_t j0,
+                               int64_t kc, int64_t nc, real *buf)
+{
+  for (int64_t jr = 0; jr < nc; jr += THGEMM_NR) {
+    const int64_t nr = nc - jr < THGEMM_NR ? nc - jr : THGEMM_NR;
+    for (int64_t p = 0; p < kc; p++) {
+      const int64_t l = p0 + p;
+      for (int64_t cc = 0; cc < THGEMM_NR; cc++) {
+        const int64_t j = j0 + jr + cc;
+        *buf++ = cc < nr ? (transb ? b[j + l * ldb] : b[l + j * ldb]) : (real)0;
+      }
+    }
+  }
+}
+
+/* One packed (mc x kc) x (kc x nc) block into C (c points at C(i0, j0)). */
+#define THGEMM_MACRO_KERNEL_BODY                                                 \
+  for (int64_t jr = 0; jr < nc; jr += THGEMM_NR) {                               \
+    const int64_t nr = nc - jr < THGEMM_NR ? nc - jr : THGEMM_NR;                \
+    const real *Bp = Bpack + jr * kc;                                            \
+    for (int64_t ir = 0; ir < mc; ir += THGEMM_MR) {                             \
+      const int64_t mr = mc - ir < THGEMM_MR ? mc - ir : THGEMM_MR;              \
+      const real *Ap = Apack + ir * kc;                                          \
+      THBlas_(GemmVec) acc[THGEMM_MR][2];                                        \
+      for (int r = 0; r < THGEMM_MR; r++) {                                      \
+        acc[r][0] = (THBlas_(GemmVec)){0};                                       \
+        acc[r][1] = (THBlas_(GemmVec)){0};                                       \
+      }                                                                          \
+      for (int64_t p = 0; p < kc; p++) {                                         \
+        THBlas_(GemmVec) b0, b1;                                                 \
+        memcpy(&b0, Bp + p * THGEMM_NR, THGEMM_VBYTES);                          \
+        memcpy(&b1, Bp + p * THGEMM_NR + THGEMM_VL, THGEMM_VBYTES);              \
+        for (int r = 0; r < THGEMM_MR; r++) {                                    \
+          const THBlas_(GemmVec) av = (THBlas_(GemmVec)){0} + Ap[p * THGEMM_MR + r]; \
+          acc[r][0] += av * b0;                                                  \
+          acc[r][1] += av * b1;                                                  \
+        }                                                                        \
+      }                                                                          \
+      /* column by column: C is column-major, so the inner loop is contiguous */ \
+      for (int64_t cc = 0; cc < nr; cc++)                                        \
+        for (int64_t r = 0; r < mr; r++) {                                       \
+          const real v = acc[r][cc / THGEMM_VL][cc % THGEMM_VL];                 \
+          real *cp = c + (ir + r) + (jr + cc) * ldc;                             \
+          *cp = (beta == 0) ? (real)(alpha * v) : (real)(beta * *cp + alpha * v); \
+        }                                                                        \
+    }                                                                            \
+  }
+
+static void THBlas_(gemmMacroGeneric)(int64_t mc, int64_t nc, int64_t kc, real alpha, real beta,
+                                      const real *Apack, const real *Bpack, real *c, int64_t ldc)
+{
+  THGEMM_MACRO_KERNEL_BODY
+}
+
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("avx2,fma")))
+static void THBlas_(gemmMacroAvx2)(int64_t mc, int64_t nc, int64_t kc, real alpha, real beta,
+                                   const real *Apack, const real *Bpack, real *c, int64_t ldc)
+{
+  THGEMM_MACRO_KERNEL_BODY
+}
+#endif
+
+typedef void (*THBlas_(GemmMacroFn))(int64_t, int64_t, int64_t, real, real,
+                                     const real *, const real *, real *, int64_t);
+
+static void THBlas_(gemmBlocked)(int transa, int transb, int64_t m, int64_t n, int64_t k,
+                                 real alpha, const real *a, int64_t lda, const real *b, int64_t ldb,
+                                 real beta, real *c, int64_t ldc)
+{
+  if (m <= 0 || n <= 0) return;
+  if (k <= 0) {   /* no products: C = beta*C (or alpha*0 when beta == 0) */
+    for (int64_t j = 0; j < n; j++)
+      for (int64_t i = 0; i < m; i++) {
+        real *cp = c + i + j * ldc;
+        *cp = (beta == 0) ? (real)(alpha * (real)0) : (real)(beta * *cp + alpha * (real)0);
+      }
+    return;
+  }
+
+  THBlas_(GemmMacroFn) macro = THBlas_(gemmMacroGeneric);
+#if defined(__x86_64__) || defined(__i386__)
+  if (THBlas_cpuHasAvx2Fma()) macro = THBlas_(gemmMacroAvx2);
+#endif
+
+  int nthreads = 1;
+#ifdef _OPENMP
+  if (!omp_in_parallel() && (double)m * (double)n * (double)k >= 262144.0)
+    nthreads = omp_get_max_threads();
+#endif
+  /* row-block height: split m across threads, a multiple of MR, capped */
+  int64_t mc = (m + nthreads - 1) / nthreads;
+  mc = ((mc + THGEMM_MR - 1) / THGEMM_MR) * THGEMM_MR;
+  if (mc > THGEMM_MC_MAX) mc = THGEMM_MC_MAX;
+  if (mc < THGEMM_MR) mc = THGEMM_MR;
+
+  const int64_t ncAlloc = n < THGEMM_NC ? ((n + THGEMM_NR - 1) / THGEMM_NR) * THGEMM_NR : THGEMM_NC;
+  real *Bpack = THAlloc(sizeof(real) * THGEMM_KC * ncAlloc);
+
+#pragma omp parallel num_threads(nthreads) if (nthreads > 1)
+  {
+    real *Apack = THAlloc(sizeof(real) * THGEMM_KC * mc);
+    for (int64_t jc = 0; jc < n; jc += THGEMM_NC) {
+      const int64_t nc = n - jc < THGEMM_NC ? n - jc : THGEMM_NC;
+      for (int64_t pc = 0; pc < k; pc += THGEMM_KC) {
+        const int64_t kc = k - pc < THGEMM_KC ? k - pc : THGEMM_KC;
+        const real betaEff = pc == 0 ? beta : (real)1;
+        /* pack B: its NR-column micro-panels are independent, so split them
+           (implicit barrier: everyone then sees the whole packed B) */
+#pragma omp for schedule(static)
+        for (int64_t jr = 0; jr < nc; jr += THGEMM_NR)
+          THBlas_(gemmPackB)(transb, b, ldb, pc, jc + jr, kc,
+                             nc - jr < THGEMM_NR ? nc - jr : THGEMM_NR, Bpack + jr * kc);
+#pragma omp for schedule(static)
+        for (int64_t ic = 0; ic < m; ic += mc) {
+          const int64_t mcc = m - ic < mc ? m - ic : mc;
+          THBlas_(gemmPackA)(transa, a, lda, ic, pc, mcc, kc, Apack);
+          macro(mcc, nc, kc, alpha, betaEff, Apack, Bpack, c + ic + jc * ldc, ldc);
+        }
+        /* (implicit barrier before B is repacked) */
+      }
+    }
+    THFree(Apack);
+  }
+  THFree(Bpack);
+}
+
+#undef THGEMM_MACRO_KERNEL_BODY
+#undef THGEMM_VL
+#undef THGEMM_NR
+
 void THBlas_(gemm)(char transa, char transb, int64_t m, int64_t n, int64_t k, real alpha, real *a, int64_t lda, real *b, int64_t ldb, real beta, real *c, int64_t ldc)
 {
   int transa_ = ((transa == 't') || (transa == 'T'));
@@ -335,6 +505,10 @@ void THBlas_(gemm)(char transa, char transb, int64_t m, int64_t n, int64_t k, re
     return;
   }
 #endif
+  if ((double)m * (double)n * (double)k >= THGEMM_MIN_WORK) {
+    THBlas_(gemmBlocked)(transa_, transb_, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    return;
+  }
   {
     int64_t i, j, l;
     if(!transa_ && !transb_)

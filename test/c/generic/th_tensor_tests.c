@@ -756,9 +756,87 @@ static void TT(int_division)(void)
 
   THTensor_(free)(a); THTensor_(free)(b); THTensor_(free)(r); THTensor_(free)(divs);
 }
+/* Integer matrix multiply must be EXACT (two's-complement wrap-around), for
+   any blocking: full-range random values, shapes crossing the built-in GEMM's
+   block sizes (KC = 256 deep, NC = 2048 wide), all transpose combinations. */
+static void TT(int_gemm_exact)(void)
+{
+  static const int64_t dims[][3] = {{5, 7, 3}, {37, 300, 41}, {6, 513, 13}, {7, 2100, 3}};
+  uint64_t rng = 14;
+  for (int d = 0; d < 4; d++) {
+    const int64_t M = dims[d][0], K = dims[d][1], N = dims[d][2];
+    for (int ta = 0; ta < 2; ta++)
+    for (int tb = 0; tb < 2; tb++) {
+      THTensor *m1 = ta ? THTensor_(newWithSize2d)(K, M) : THTensor_(newWithSize2d)(M, K);
+      THTensor *m2 = tb ? THTensor_(newWithSize2d)(N, K) : THTensor_(newWithSize2d)(K, N);
+      THTensor *t = THTensor_(newWithSize2d)(M, N);
+      THTensor *all[3] = {m1, m2, t};
+      for (int q = 0; q < 3; q++)
+        for (int64_t i = 0; i < THTensor_(nElement)(all[q]); i++) {
+          rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+          THTensor_(data)(all[q])[i] = TT(wrap)((__int128)(int64_t)(rng ^ (rng >> 31)));
+        }
+      THTensor *a = ta ? THTensor_(newTranspose)(m1, 0, 1) : THTensor_(newClone)(m1);
+      THTensor *b = tb ? THTensor_(newTranspose)(m2, 0, 1) : THTensor_(newClone)(m2);
+      THTensor *r = THTensor_(new)();
+      const real beta = 2, alpha = 3;
+      THTensor_(addmm)(r, beta, t, alpha, a, b);
+      int ok = 1;
+      for (int64_t i = 0; i < M && ok; i++)
+      for (int64_t j = 0; j < N && ok; j++) {
+        __int128 acc = 0;
+        for (int64_t k = 0; k < K; k++)
+          acc += (__int128)*TT(at)(a, i, k) * (__int128)*TT(at)(b, k, j);
+        real want = TT(wrap)((__int128)beta * *TT(at)(t, i, j) + (__int128)alpha * acc);
+        real got = *TT(at)(r, i, j);
+        ok = got == want;
+        CHECK(ok, "int gemm %" PRId64 "x%" PRId64 "x%" PRId64 " ta=%d tb=%d at (%" PRId64 ",%" PRId64
+              "): got %" PRId64 " want %" PRId64, M, K, N, ta, tb, i, j, (int64_t)got, (int64_t)want);
+      }
+      THTensor_(free)(m1); THTensor_(free)(m2); THTensor_(free)(t);
+      THTensor_(free)(a); THTensor_(free)(b); THTensor_(free)(r);
+    }
+  }
+}
+
 #undef TT_BITS
 #undef TT_MINV
 #undef TT_MAXV
+#endif
+
+#ifdef TT_FLOATING
+/* Floating-point matrix multiply on shapes crossing the GEMM block sizes,
+   against a double-precision reference (error bound scales with K). */
+static void TT(gemm_large)(void)
+{
+  static const int64_t dims[][3] = {{129, 257, 65}, {300, 70, 513}, {7, 600, 2100}, {1, 1000, 1}};
+  uint64_t rng = 15;
+  for (int d = 0; d < 4; d++) {
+    const int64_t M = dims[d][0], K = dims[d][1], N = dims[d][2];
+    for (int ta = 0; ta < 2; ta++)
+    for (int tb = 0; tb < 2; tb++) {
+      THTensor *a = TT(make)(ta ? L_TRANSPOSED : L_CONTIG, M, K, &rng, -1, 1);
+      THTensor *b = TT(make)(tb ? L_TRANSPOSED : L_CONTIG, K, N, &rng, -1, 1);
+      THTensor *t = TT(make)(L_CONTIG, M, N, &rng, -1, 1);
+      THTensor *r = THTensor_(new)();
+      THTensor_(addmm)(r, 0.5, t, 2, a, b);
+      int ok = 1;
+      for (int64_t i = 0; i < M && ok; i++)
+      for (int64_t j = 0; j < N && ok; j++) {
+        double acc = 0, mag = 0;
+        for (int64_t k = 0; k < K; k++) {
+          double p = (double)*TT(at)(a, i, k) * *TT(at)(b, k, j);
+          acc += p; mag += fabs(p);
+        }
+        double want = 0.5 * *TT(at)(t, i, j) + 2 * acc;
+        ok = fabs(*TT(at)(r, i, j) - want) <= 4 * TT_EPS * (2 * mag + 1) * (1 + log2((double)K));
+        CHECK(ok, "gemm %" PRId64 "x%" PRId64 "x%" PRId64 " ta=%d tb=%d at (%" PRId64 ",%" PRId64
+              "): got %.9g want %.9g", M, K, N, ta, tb, i, j, (double)*TT(at)(r, i, j), want);
+      }
+      THTensor_(free)(a); THTensor_(free)(b); THTensor_(free)(t); THTensor_(free)(r);
+    }
+  }
+}
 #endif
 
 /* ------------------------------------------------------------------------ */
@@ -784,6 +862,9 @@ static void TT(suite)(void)
 #ifndef TT_FLOATING
   RUN(TT(int_shifts));
   RUN(TT(int_division));
+  RUN(TT(int_gemm_exact));
+#else
+  RUN(TT(gemm_large));
 #endif
 }
 
