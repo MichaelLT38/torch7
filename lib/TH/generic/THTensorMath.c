@@ -702,10 +702,55 @@ real THTensor_(medianall)(THTensor *tensor)
   return theMedian;
 }
 
+/* sumall (Phase 3b): every thread keeps its own partial sum (8 independent
+   accumulators within a run, so the additions can overlap), and partials are
+   combined in thread order. Integer sums are exact as before (wrap-around
+   addition does not depend on order). Floating-point sums change by rounding
+   only: a different, and for long sums more accurate, summation order. For a
+   given thread count the result is deterministic. */
+#define TH_SUMALL_PAD 8   /* accreals per thread slot: keeps slots on separate cache lines */
+
+static void THTensor_(sumAllLoop)(char **d, const int64_t *s, int64_t n, void *ctx)
+{
+  int tid = 0;
+#ifdef _OPENMP
+  tid = omp_get_thread_num();
+#endif
+  accreal *slot = (accreal *)ctx + TH_SUMALL_PAD * tid;
+  if (TH_ITER_CONTIG(s[0])) {
+    const real *x = (const real *)d[0];
+    accreal a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0, a7 = 0;
+    int64_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+      a0 += x[i];     a1 += x[i + 1]; a2 += x[i + 2]; a3 += x[i + 3];
+      a4 += x[i + 4]; a5 += x[i + 5]; a6 += x[i + 6]; a7 += x[i + 7];
+    }
+    for (; i < n; i++) a0 += x[i];
+    *slot += ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+  } else {
+    accreal a = 0;
+    const char *p = d[0];
+    for (int64_t i = 0; i < n; i++, p += s[0]) a += *(const real *)p;
+    *slot += a;
+  }
+}
+
 accreal THTensor_(sumall)(THTensor *tensor)
 {
+  if (THTensor_(nElement)(tensor) == 0) return 0;
+  int maxThreads = 1;
+#ifdef _OPENMP
+  maxThreads = omp_get_max_threads();
+#endif
+  accreal *partials = THAlloc(sizeof(accreal) * TH_SUMALL_PAD * maxThreads);
+  for (int t = 0; t < TH_SUMALL_PAD * maxThreads; t++) partials[t] = 0;
+  THIterOperand op = THTensor_(iterOperand)(tensor);
+  THIter it;
+  THIter_build(&it, 1, &op);
+  THIter_run(&it, THTensor_(sumAllLoop), partials, TH_ITER_GRAIN);
   accreal sum = 0;
-  TH_TENSOR_APPLY(real, tensor, sum += *tensor_data;);
+  for (int t = 0; t < maxThreads; t++) sum += partials[TH_SUMALL_PAD * t];
+  THFree(partials);
   return sum;
 }
 
