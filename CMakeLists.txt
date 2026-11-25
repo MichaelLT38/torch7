@@ -88,9 +88,13 @@ IF(TORCH_BUILD_TESTS)
     COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/run_lua_tests.lua"
             "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}" ${_has_lapack}
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  ADD_TEST(NAME lua.int64
+    COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_int64.lua"
+            "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
   IF(WIN32)
     # Windows resolves libTH.dll/libluaT.dll through PATH.
-    SET_TESTS_PROPERTIES(lua.torch PROPERTIES
+    SET_TESTS_PROPERTIES(lua.torch lua.int64 PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${CMAKE_BINARY_DIR}")
   ENDIF()
 ENDIF()

@@ -170,12 +170,105 @@ static void misc_max_min_ties_lowest_index(void)
   }
 }
 
+/* LongTensor values beyond 32 bits survive arithmetic, reductions, sort and
+ * conversions (LongTensor was 32-bit on Windows before Phase 1). */
+static void misc_long_values_64bit(void)
+{
+  const int64_t T40 = (int64_t)1 << 40;
+  const int64_t vals[5] = {T40, -T40 + 5, INT64_MAX / 4, 3, -((int64_t)1 << 33)};
+  THLongTensor *a = THLongTensor_newWithSize1d(5), *r = THLongTensor_new();
+  for (int i = 0; i < 5; i++) THLongTensor_set1d(a, i, vals[i]);
+
+  CHECK(sizeof(int64_t) == 8 && THLongTensor_get1d(a, 0) == T40, "store/load 2^40");
+  THLongTensor_mul(r, a, 3);
+  CHECK(THLongTensor_get1d(r, 0) == 3 * T40 && THLongTensor_get1d(r, 4) == -3 * ((int64_t)1 << 33),
+        "mul by 3: got %" PRId64, THLongTensor_get1d(r, 0));
+  THLongTensor_cadd(r, a, 1, a);
+  CHECK(THLongTensor_get1d(r, 1) == 2 * (-T40 + 5), "cadd");
+
+  int64_t want = 0;
+  for (int i = 0; i < 5; i++) want += vals[i];
+  CHECK(THLongTensor_sumall(a) == want, "sumall: got %" PRId64 " want %" PRId64,
+        (int64_t)THLongTensor_sumall(a), want);
+
+  THLongTensor *mv = THLongTensor_new(), *mi = THLongTensor_new();
+  THLongTensor_max(mv, mi, a, 0, 0);
+  CHECK(THLongTensor_get1d(mv, 0) == INT64_MAX / 4 && THLongTensor_get1d(mi, 0) == 2, "max/argmax");
+
+  THLongTensor *sv = THLongTensor_new(), *si = THLongTensor_new();
+  THLongTensor_sort(sv, si, a, 0, 0);
+  CHECK(THLongTensor_get1d(sv, 0) == -T40 + 5 && THLongTensor_get1d(sv, 4) == INT64_MAX / 4, "sort");
+
+  THDoubleTensor *d = THDoubleTensor_new();
+  THDoubleTensor_resize1d(d, 5);
+  THDoubleTensor_copyLong(d, a);
+  CHECK(THDoubleTensor_get1d(d, 0) == 1099511627776.0, "copy Long -> Double");
+  THLongTensor_copyDouble(r, d);
+  CHECK(THLongTensor_get1d(r, 4) == -((int64_t)1 << 33), "copy Double -> Long");
+
+  THLongTensor_free(a); THLongTensor_free(r); THLongTensor_free(mv); THLongTensor_free(mi);
+  THLongTensor_free(sv); THLongTensor_free(si); THDoubleTensor_free(d);
+}
+
 static void misc_suite(void)
 {
   RUN(misc_shape_errors);
   RUN(misc_known_issue_same_numel_flattens);
   RUN(misc_copy_cross_type);
   RUN(misc_max_min_ties_lowest_index);
+  RUN(misc_long_values_64bit);
+}
+
+/* ------------------------------------------------------------------------ */
+/* 64-bit sizes: more than 2^31 elements (impossible on Windows before,    */
+/* where sizes were 32-bit C long). Needs ~2 GB; skipped if allocation     */
+/* fails.                                                                   */
+/* ------------------------------------------------------------------------ */
+static void large_over_2g_elements(void)
+{
+  const int64_t n = ((int64_t)1 << 31) + 17;          /* > INT32_MAX */
+  THByteTensor *volatile t = NULL;
+  jmp_buf jb;
+  jmp_buf *prev = th_test_jmp;
+  th_test_jmp = &jb;
+  if (setjmp(jb) == 0) t = THByteTensor_newWithSize1d(n);
+  th_test_jmp = prev;
+  if (!t) {
+    printf("    SKIP: could not allocate %" PRId64 " bytes (%s)\n", n, th_test_errmsg);
+    return;
+  }
+
+  CHECK(THByteTensor_nElement(t) == n && THByteTensor_size(t, 0) == n,
+        "nElement %" PRId64 ", size %" PRId64 ", want %" PRId64,
+        (int64_t)THByteTensor_nElement(t), THByteTensor_size(t, 0), n);
+  THByteTensor_fill(t, 1);
+  THByteTensor_set1d(t, n - 1, 3);
+  CHECK(THByteTensor_get1d(t, n - 1) == 3, "last element");
+
+  /* accreal for Byte is int64_t: the sum no longer wraps at 2^31 */
+  int64_t s = THByteTensor_sumall(t);
+  CHECK(s == n + 2, "sumall: got %" PRId64 ", want %" PRId64, s, n + 2);
+
+  /* a view whose storage offset is beyond 2^31 */
+  THByteTensor *v = THByteTensor_newNarrow(t, 0, n - 10, 10);
+  CHECK(THByteTensor_get1d(v, 9) == 3 && THByteTensor_sumall(v) == 12,
+        "narrow view at offset %" PRId64, n - 10);
+
+  /* a stride beyond 2^31 */
+  const int64_t big = (int64_t)1 << 31;
+  THByteTensor *w = THByteTensor_newWithStorage2d(THByteTensor_storage(t), 0, 2, big, 4, 1);
+  THByteTensor_set2d(w, 1, 2, 7);
+  CHECK(THByteTensor_data(t)[big + 2] == 7 && THByteTensor_stride(w, 0) == big,
+        "2-D view with stride 2^31");
+
+  THByteTensor_free(v);
+  THByteTensor_free(w);
+  THByteTensor_free(t);
+}
+
+static void large_suite(void)
+{
+  RUN(large_over_2g_elements);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -187,6 +280,7 @@ static const th_suite suites[] = {
   {"short", test_Short_suite},   {"int", test_Int_suite},
   {"long", test_Long_suite},     {"float", test_Float_suite},
   {"double", test_Double_suite}, {"misc", misc_suite},
+  {"large", large_suite},
 };
 
 int main(int argc, char **argv)

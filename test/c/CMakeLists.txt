@@ -7,6 +7,6 @@ TARGET_INCLUDE_DIRECTORIES(th_tests PRIVATE
   "${PROJECT_BINARY_DIR}/lib/TH")
 TARGET_LINK_LIBRARIES(th_tests PRIVATE TH m)
 
-FOREACH(suite byte char short int long float double misc)
+FOREACH(suite byte char short int long float double misc large)
   ADD_TEST(NAME th.${suite} COMMAND th_tests ${suite})
 ENDFOREACH()
