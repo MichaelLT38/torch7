@@ -305,7 +305,7 @@ void THTensor_(expand)(THTensor *r, THTensor *tensor, THLongStorage *sizes) {
                                         sizes, &expandedSizes, &expandedStrides, error_buffer, 1024);
 
   if (ret != 0) {
-    THError(error_buffer);
+    THError("%s", error_buffer);
     return;
   }
 
@@ -342,7 +342,7 @@ void THTensor_(expandNd)(THTensor **rets, THTensor **ops, int count) {
     THFree(op_sizes);
     THFree(op_dims);
     THLongStorage_free(sizes);
-    THError(error_buffer);
+    THError("%s", error_buffer);
     return;
   }
 

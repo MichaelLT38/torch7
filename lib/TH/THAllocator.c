@@ -164,7 +164,7 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
         else
         {
           CloseHandle(hfile);
-          THError("file <%s> size is smaller than the required mapping size <%" PRId64 ">; error code: <%lu>", ctx->filename, size, GetLastError());
+          THError("file <%s> size is smaller than the required mapping size <%td>; error code: <%lu>", ctx->filename, size, GetLastError());
         }
       }
     }
@@ -271,7 +271,7 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
         else
         {
           close(fd);
-          THError("file <%s> size is smaller than the required mapping size <%" PRId64 ">", ctx->filename, size);
+          THError("file <%s> size is smaller than the required mapping size <%td>", ctx->filename, size);
         }
       }
     }
@@ -314,7 +314,7 @@ static void *_map_alloc(void* ctx_, ptrdiff_t size)
     if(data == MAP_FAILED)
     {
       data = NULL; /* let's be sure it is NULL */
-      THError("$ Torch: unable to mmap memory: you tried to mmap %dGB.", ctx->size/1073741824);
+      THError("$ Torch: unable to mmap memory: you tried to mmap %tdGB.", ctx->size/1073741824);
     }
   }
 #endif
