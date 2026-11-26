@@ -13,13 +13,13 @@
 #include "THGenerateAllTypes.h"
 
 #include "generic/THTensor.c"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 #include "generic/THTensorCopy.c"
 #include "THGenerateAllTypes.h"
 
 #include "generic/THTensorCopy.c"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 #include "generic/THTensorRandom.c"
 #include "THGenerateAllTypes.h"

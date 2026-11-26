@@ -202,7 +202,7 @@ types.IndexTensor = {
 }
 
 for _,typename in ipairs({"ByteTensor", "CharTensor", "ShortTensor", "IntTensor", "LongTensor",
-                          "FloatTensor", "HalfTensor", "DoubleTensor"}) do
+                          "FloatTensor", "HalfTensor", "BFloat16Tensor", "DoubleTensor"}) do
 
    types[typename] = {
 

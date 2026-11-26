@@ -697,6 +697,7 @@ local typesMatching = {
       ['torch.FloatStorage'] = torch.FloatTensor,
       ['torch.DoubleStorage'] = torch.DoubleTensor,
       ['torch.HalfStorage'] = torch.HalfTensor,
+      ['torch.BFloat16Storage'] = torch.BFloat16Tensor,
 }
 
 --[[ Tests for storage equality.

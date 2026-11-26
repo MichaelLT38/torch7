@@ -26,4 +26,15 @@ TH_API void TH_floatToHalfN(THHalf *dst, const float *src, ptrdiff_t n);
 #define TH_HALF_INF  0x7C00U
 #define TH_HALF_MAX  65504.0f   /* largest finite half */
 
+/* bfloat16: the top 16 bits of an IEEE float (8-bit exponent, 7 explicit
+ * mantissa bits), using GCC's native __bf16 (an arithmetic type on x86-64
+ * since GCC 13). Computed in float and rounded to nearest even, like THHalf. */
+typedef __bf16 THBFloat16;
+
+#define TH_BFLOAT16_MAX 3.38953139e38f   /* largest finite bfloat16 (0x7f7f) */
+
+/* n contiguous values; vectorized integer code, OpenMP for large n */
+TH_API void TH_bfloat16ToFloatN(float *dst, const THBFloat16 *src, ptrdiff_t n);
+TH_API void TH_floatToBFloat16N(THBFloat16 *dst, const float *src, ptrdiff_t n);
+
 #endif

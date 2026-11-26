@@ -10,6 +10,7 @@
 #endif
 
 #include "THGenerateHalfType.h"
+#include "THGenerateBFloat16Type.h"
 
 #ifdef THReducedLocalGenerateManyTypes
 #undef THReducedLocalGenerateManyTypes

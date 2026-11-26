@@ -126,3 +126,49 @@ void TH_floatToHalfN(THHalf *dst, const float *src, ptrdiff_t n)
       dst[c + i] = (THHalf)src[c + i];
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * bfloat16 bulk conversions: plain integer code on the bit patterns, which
+ * GCC vectorizes with the baseline ISA (no dispatch needed). Round to nearest
+ * even with NaNs kept quiet: identical to GCC's (__bf16) cast on all 2^32
+ * floats (checked exhaustively). bfloat16 -> float is exact (a shift).
+ * ------------------------------------------------------------------------- */
+/* integer views of float / bfloat16 data (may_alias: no strict-aliasing assumptions) */
+typedef uint32_t TH_u32_alias __attribute__((may_alias));
+typedef uint16_t TH_u16_alias __attribute__((may_alias));
+
+static void TH_bfloat16ToFloatSerial(float *restrict dst, const THBFloat16 *restrict src, ptrdiff_t n)
+{
+  const TH_u16_alias *s = (const TH_u16_alias *)src;
+  TH_u32_alias *d = (TH_u32_alias *)dst;
+  for (ptrdiff_t i = 0; i < n; i++)
+    d[i] = (uint32_t)s[i] << 16;
+}
+
+static void TH_floatToBFloat16Serial(THBFloat16 *restrict dst, const float *restrict src, ptrdiff_t n)
+{
+  const TH_u32_alias *s = (const TH_u32_alias *)src;
+  TH_u16_alias *d = (TH_u16_alias *)dst;
+  for (ptrdiff_t i = 0; i < n; i++) {
+    const uint32_t u = s[i];
+    const uint16_t rounded = (uint16_t)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+    const uint16_t quiet_nan = (uint16_t)((u >> 16) | 0x0040u);
+    d[i] = (u & 0x7fffffffu) > 0x7f800000u ? quiet_nan : rounded;
+  }
+}
+
+void TH_bfloat16ToFloatN(float *dst, const THBFloat16 *src, ptrdiff_t n)
+{
+  if (n <= 4 * TH_HALF_CONVERT_GRAIN) { TH_bfloat16ToFloatSerial(dst, src, n); return; }
+#pragma omp parallel for schedule(static)
+  for (ptrdiff_t c = 0; c < n; c += TH_HALF_CONVERT_GRAIN)
+    TH_bfloat16ToFloatSerial(dst + c, src + c, n - c < TH_HALF_CONVERT_GRAIN ? n - c : TH_HALF_CONVERT_GRAIN);
+}
+
+void TH_floatToBFloat16N(THBFloat16 *dst, const float *src, ptrdiff_t n)
+{
+  if (n <= 4 * TH_HALF_CONVERT_GRAIN) { TH_floatToBFloat16Serial(dst, src, n); return; }
+#pragma omp parallel for schedule(static)
+  for (ptrdiff_t c = 0; c < n; c += TH_HALF_CONVERT_GRAIN)
+    TH_floatToBFloat16Serial(dst + c, src + c, n - c < TH_HALF_CONVERT_GRAIN ? n - c : TH_HALF_CONVERT_GRAIN);
+}

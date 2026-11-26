@@ -79,7 +79,7 @@ argtypes.index = {
 -- (C `long` is only 32 bits on Windows), so it generates int64_t.
 local ctypes = {long = "int64_t"}
 
-for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long", "int64_t", "float", "double", "THHalf"}) do
+for _,typename in ipairs({"real", "unsigned char", "char", "short", "int", "long", "int64_t", "float", "double", "THHalf", "THBFloat16"}) do
    local ctype = ctypes[typename] or typename
    argtypes[typename] = {
 

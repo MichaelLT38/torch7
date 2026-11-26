@@ -15,13 +15,13 @@
 #include "THGenerateAllTypes.h"
 
 #include "generic/THStorage.h"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 #include "generic/THStorageCopy.h"
 #include "THGenerateAllTypes.h"
 
 #include "generic/THStorageCopy.h"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 TH_API THDescBuff THLongStorage_sizeDesc(const THLongStorage *size);
 TH_API THLongStorage *THLongStorage_newInferSize(THLongStorage *size, ptrdiff_t nElement);

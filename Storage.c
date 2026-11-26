@@ -9,4 +9,4 @@
 #include "THGenerateAllTypes.h"
 
 #include "generic/Storage.c"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"

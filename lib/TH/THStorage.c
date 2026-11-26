@@ -5,13 +5,13 @@
 #include "THGenerateAllTypes.h"
 
 #include "generic/THStorage.c"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 #include "generic/THStorageCopy.c"
 #include "THGenerateAllTypes.h"
 
 #include "generic/THStorageCopy.c"
-#include "THGenerateHalfType.h"
+#include "THGenerateReducedTypes.h"
 
 
 THDescBuff THLongStorage_sizeDesc(const THLongStorage *size) {

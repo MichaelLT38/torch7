@@ -28,7 +28,8 @@ if ok then
       Long='int64_t',
       Float='float',
       Double='double',
-      Half='THHalf'
+      Half='THHalf',
+      BFloat16='THBFloat16'
    }
 
    -- Allocator
@@ -46,6 +47,10 @@ typedef struct {
   unsigned short x;
 } __THHalf;
 typedef __THHalf THHalf;
+typedef struct {
+  unsigned short x;
+} __THBFloat16;
+typedef __THBFloat16 THBFloat16;
 ]]
 
    -- Storage
@@ -122,7 +127,7 @@ typedef struct THRealTensor
              end)
 
       -- faster apply (contiguous case)
-      if Tensor_type ~= 'torch.HalfTensor' then
+      if Tensor_type ~= 'torch.HalfTensor' and Tensor_type ~= 'torch.BFloat16Tensor' then
          local apply = Tensor.apply
          rawset(Tensor,
                 "apply",

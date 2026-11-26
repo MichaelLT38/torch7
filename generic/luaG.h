@@ -48,7 +48,7 @@ static real luaG_(checkreal)(lua_State *L, int idx) {
 }
 
 static real luaG_(optreal)(lua_State *L, int idx, real n) {
-#if defined(TH_REAL_IS_HALF) || defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || LUA_VERSION_NUM < 503
+#if defined(TH_REAL_IS_FLOATING) || LUA_VERSION_NUM < 503
   return LUA_NUMBER_TO_REAL(luaL_optnumber(L, idx, REAL_TO_LUA_NUMBER(n)));
 #elif defined(TH_REAL_IS_BYTE) || defined(TH_REAL_IS_CHAR) || defined(TH_REAL_IS_SHORT) || defined(TH_REAL_IS_INT) || defined(TH_REAL_IS_LONG)
 	return (lua_Integer)luaL_optinteger(L, idx, (lua_Integer)n);

@@ -92,6 +92,12 @@ allocation fails.
   * Float↔half copies and the conversions inside half matrix products use F16C
     (8 values per instruction) on CPUs that have it. `TH_NO_AVX2=1` turns this
     off, as it does for the other AVX2 kernels.
+* **New: `BFloat16Tensor`** (`torch.BFloat16Tensor`, `t:bfloat16()`,
+  `torch.BFloat16Storage`). bfloat16 is the top 16 bits of a float: float's
+  8-bit exponent range with 8 bits of precision. It uses GCC's `__bf16` and
+  follows the same rules as `HalfTensor`: everything computes in float and
+  rounds once to nearest even, it covers the same operations, and it can be
+  saved and loaded in binary and ASCII.
   * Upstream's `test.lua` replaced several `HalfTensor` methods (`mean`, `abs`,
     `max`, `add`, `fill`, …) with float-based Lua stand-ins, and `fill` didn't
     even fill in place. Those stand-ins are gone.

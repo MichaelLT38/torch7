@@ -20,6 +20,8 @@ void THTensor_(random)(THTensor *self, THGenerator *_generator)
   TH_TENSOR_APPLY(real, self, *self_data = (double)(THRandom_random(_generator) % ((1ULL << DBL_MANT_DIG)+1)););
 #elif defined(TH_REAL_IS_HALF)
   TH_TENSOR_APPLY(real, self, *self_data = (real)(THRandom_random(_generator) % ((1ULL << 11)+1)););
+#elif defined(TH_REAL_IS_BFLOAT16)
+  TH_TENSOR_APPLY(real, self, *self_data = (real)(THRandom_random(_generator) % ((1ULL << 8)+1)););
 #else
 #error "Unknown type"
 #endif

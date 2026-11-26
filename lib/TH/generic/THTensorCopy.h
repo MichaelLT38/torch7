@@ -13,5 +13,6 @@ TH_API void THTensor_(copyLong)(THTensor *tensor, struct THLongTensor *src);
 TH_API void THTensor_(copyFloat)(THTensor *tensor, struct THFloatTensor *src);
 TH_API void THTensor_(copyDouble)(THTensor *tensor, struct THDoubleTensor *src);
 TH_API void THTensor_(copyHalf)(THTensor *tensor, struct THHalfTensor *src);
+TH_API void THTensor_(copyBFloat16)(THTensor *tensor, struct THBFloat16Tensor *src);
 
 #endif

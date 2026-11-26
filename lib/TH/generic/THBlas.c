@@ -53,6 +53,9 @@ TH_EXTERNC void sgemm_(char *transa, char *transb, int *m, int *n, int *k, float
 #if defined(TH_REAL_IS_HALF)
 #define THBLAS_REDUCED_TO_FLOAT(dst, src, n) TH_halfToFloatN((dst), (src), (n))
 #define THBLAS_FLOAT_TO_REDUCED(dst, src, n) TH_floatToHalfN((dst), (src), (n))
+#elif defined(TH_REAL_IS_BFLOAT16)
+#define THBLAS_REDUCED_TO_FLOAT(dst, src, n) TH_bfloat16ToFloatN((dst), (src), (n))
+#define THBLAS_FLOAT_TO_REDUCED(dst, src, n) TH_floatToBFloat16N((dst), (src), (n))
 #else
 #define THBLAS_REDUCED_TO_FLOAT(dst, src, n) \
   do { for (int64_t q_ = 0; q_ < (n); q_++) (dst)[q_] = (float)(src)[q_]; } while (0)

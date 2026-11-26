@@ -81,15 +81,9 @@ void THTensor_(copy)(THTensor *tensor, THTensor *src)
     real *sp = THTensor_(data)(src);
     real *rp = THTensor_(data)(tensor);
     ptrdiff_t sz = THTensor_(nElement)(tensor);
-#ifndef TH_REAL_IS_HALF
     THVector_(copy)(rp, sp, sz);
-#else
-    memcpy(rp, sp, sz * sizeof(real));
-#endif
-#ifndef TH_REAL_IS_HALF
   } else if (THTensor_(copyTransposeValid)(tensor, src)) {
     THTensor_(copyTranspose)(tensor, src);
-#endif
   } else if (THTensor_(isSameSizeAs)(tensor, src) && THTensor_(iterSafe)(tensor, src)) {
     /* same shape: THIter (coalescing + OpenMP). Copies between different
        shapes with the same number of elements keep the documented flat
@@ -109,66 +103,44 @@ void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src
   TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
 }
 
-#define IMPLEMENT_THTensor_COPY_TO_HALF(TYPENAMESRC, TYPE_SRC) \
+/* the same, with a bulk conversion routine for contiguous tensors */
+#define IMPLEMENT_THTensor_COPY_BULK(TYPENAMESRC, TYPE_SRC, BULK) \
 void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src) \
 { \
- TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
+  ptrdiff_t n = THTensor_(nElement)(tensor); \
+  if (THTensor_(isContiguous)(tensor) && TH##TYPENAMESRC##Tensor_isContiguous(src) && \
+      n == TH##TYPENAMESRC##Tensor_nElement(src)) { \
+    BULK(THTensor_(data)(tensor), TH##TYPENAMESRC##Tensor_data(src), n); \
+    return; \
+  } \
+  TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
 }
 
-#define IMPLEMENT_THTensor_COPY_FROM_HALF(TYPENAMESRC, TYPE_SRC) \
-void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src) \
-{ \
- TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
-}
-
-#define IMPLEMENT_THTensor_COPY_TO_FROM_HALF(TYPENAMESRC, TYPE_SRC) \
-void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src) \
-{ \
- TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = *src_data;) \
-}
-
-#ifndef TH_REAL_IS_HALF
+/* Every pair converts with a plain C cast: the 16-bit types (THHalf, THBFloat16)
+   are native GCC floating types, so each conversion rounds once, to nearest even.
+   float <-> 16-bit copies of contiguous tensors use the bulk routines of THHalf.h
+   (same results). */
 IMPLEMENT_THTensor_COPY(Byte, unsigned char)
 IMPLEMENT_THTensor_COPY(Char, char)
 IMPLEMENT_THTensor_COPY(Short, short)
 IMPLEMENT_THTensor_COPY(Int, int)
 IMPLEMENT_THTensor_COPY(Long, int64_t)
-IMPLEMENT_THTensor_COPY(Float, float)
 IMPLEMENT_THTensor_COPY(Double, double)
-#if defined(TH_REAL_IS_FLOAT)
-/* contiguous half -> float: bulk F16C conversion */
-void THTensor_(copyHalf)(THTensor *tensor, THHalfTensor *src)
-{
-  ptrdiff_t n = THTensor_(nElement)(tensor);
-  if (THTensor_(isContiguous)(tensor) && THHalfTensor_isContiguous(src) && n == THHalfTensor_nElement(src)) {
-    TH_halfToFloatN(THTensor_(data)(tensor), THHalfTensor_data(src), n);
-    return;
-  }
-  TH_TENSOR_APPLY2(real, tensor, THHalf, src, *tensor_data = (real)(*src_data);)
-}
-#else
-IMPLEMENT_THTensor_COPY_FROM_HALF(Half, THHalf)
-#endif
-#else
-/* only allow pass-through for Half */
-IMPLEMENT_THTensor_COPY_TO_FROM_HALF(Half, THHalf)
-IMPLEMENT_THTensor_COPY_TO_HALF(Byte, unsigned char)
-IMPLEMENT_THTensor_COPY_TO_HALF(Char, char)
-IMPLEMENT_THTensor_COPY_TO_HALF(Short, short)
-IMPLEMENT_THTensor_COPY_TO_HALF(Int, int)
-IMPLEMENT_THTensor_COPY_TO_HALF(Long, int64_t)
-/* contiguous float -> half: bulk F16C conversion */
-void THTensor_(copyFloat)(THTensor *tensor, THFloatTensor *src)
-{
-  ptrdiff_t n = THTensor_(nElement)(tensor);
-  if (THTensor_(isContiguous)(tensor) && THFloatTensor_isContiguous(src) && n == THFloatTensor_nElement(src)) {
-    TH_floatToHalfN(THTensor_(data)(tensor), THFloatTensor_data(src), n);
-    return;
-  }
-  TH_TENSOR_APPLY2(real, tensor, float, src, *tensor_data = (real)(*src_data);)
-}
-IMPLEMENT_THTensor_COPY_TO_HALF(Double, double)
 
-#endif /* REAL_IS_HALF */
+#if defined(TH_REAL_IS_FLOAT)
+IMPLEMENT_THTensor_COPY_BULK(Half, THHalf, TH_halfToFloatN)
+IMPLEMENT_THTensor_COPY_BULK(BFloat16, THBFloat16, TH_bfloat16ToFloatN)
+#else
+IMPLEMENT_THTensor_COPY(Half, THHalf)
+IMPLEMENT_THTensor_COPY(BFloat16, THBFloat16)
+#endif
+
+#if defined(TH_REAL_IS_HALF)
+IMPLEMENT_THTensor_COPY_BULK(Float, float, TH_floatToHalfN)
+#elif defined(TH_REAL_IS_BFLOAT16)
+IMPLEMENT_THTensor_COPY_BULK(Float, float, TH_floatToBFloat16N)
+#else
+IMPLEMENT_THTensor_COPY(Float, float)
+#endif
 
 #endif

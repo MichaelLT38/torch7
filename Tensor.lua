@@ -5,7 +5,7 @@ local Storage = {}
 local Tensor = {}
 
 -- types
-local types = {'Byte', 'Char', 'Short', 'Int', 'Long', 'Float', 'Half', 'Double'}
+local types = {'Byte', 'Char', 'Short', 'Int', 'Long', 'Float', 'Half', 'BFloat16', 'Double'}
 
 -- Lua 5.2 compatibility
 local log10 = math.log10 or function(x) return math.log(x, 10) end
@@ -279,6 +279,10 @@ end
 
 function Tensor.half(self)
    return self:type('torch.HalfTensor')
+end
+
+function Tensor.bfloat16(self)
+   return self:type('torch.BFloat16Tensor')
 end
 
 function Tensor.real(self)

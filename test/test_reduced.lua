@@ -1,4 +1,4 @@
--- Phase 4: reduced-precision floating types (HalfTensor).
+-- Phase 4: reduced-precision floating types (HalfTensor, BFloat16Tensor).
 --
 -- Contract: a reduced type stores 16 bits and computes in float. So for every
 -- operation, the result must equal the FloatTensor result on the same values,
@@ -20,6 +20,7 @@ local tests = torch.TestSuite()
 -- mant: explicit mantissa bits; emin: smallest normal exponent; max: largest finite
 local TYPES = {
    {name = 'Half', tensor = 'torch.HalfTensor', mant = 10, emin = -14, max = 65504},
+   {name = 'BFloat16', tensor = 'torch.BFloat16Tensor', mant = 7, emin = -126, max = 3.3895313892515355e38},
 }
 
 local function ulp(info, x)
@@ -81,6 +82,10 @@ local function make(info, layout, m, n, lo, hi)
 end
 
 local LAYOUTS = {'contiguous', 'transposed', 'strided'}
+
+-- -0 made at run time: Lua 5.1 merges the constant -0.0 with an earlier 0 (they compare equal)
+local NEGZERO = (function() local z = 0; return -z end)()
+assert(1 / NEGZERO < 0)
 
 local function forTypes(fn)
    return function()
@@ -271,7 +276,7 @@ end)
 tests.conversion = forTypes(function(info)
    local T = torch[info.name .. 'Tensor']
    -- exactly representable values survive every conversion
-   local vals = {0, -0.0, 1, -1, 0.5, 1024, -2048, info.max, -info.max, 2 ^ info.emin, 2 ^ (info.emin - info.mant)}
+   local vals = {0, NEGZERO, 1, -1, 0.5, 1024, -2048, info.max, -info.max, 2 ^ info.emin, 2 ^ (info.emin - info.mant)}
    local t = T(vals)
    for i, v in ipairs(vals) do tester:asserteq(t[i], v, info.name .. ' value ' .. v) end
    for _, other in ipairs({'Double', 'Float', 'Long', 'Int'}) do
@@ -288,8 +293,24 @@ tests.conversion = forTypes(function(info)
    tester:asserteq(T({info.max * 2})[1], math.huge, info.name .. ' overflow to +inf')
    tester:asserteq(T({-info.max * 2})[1], -math.huge, info.name .. ' overflow to -inf')
    local n = T({0 / 0})[1]; tester:assert(n ~= n, info.name .. ' NaN stays NaN')
-   tester:asserteq(1 / T({-0.0})[1], -math.huge, info.name .. ' -0 keeps its sign')
+   tester:asserteq(1 / T({NEGZERO})[1], -math.huge, info.name .. ' -0 keeps its sign')
    local mx = T({1, 0 / 0, 3}):max(); tester:assert(mx ~= mx, info.name .. ' max propagates NaN')
+   -- the bulk float -> 16-bit copy (contiguous) and the per-element casts agree on special values
+   local specials = {0 / 0, -(0 / 0), math.huge, -math.huge, NEGZERO, 2 ^ -130, 2 ^ -149, 3.4e38, -1 / 3,
+                     2 ^ (info.emin - info.mant - 1), 1 + 2 ^ -(info.mant + 1)}
+   local sf = torch.FloatTensor(specials)
+   local bulk = sf:type(info.tensor)                                     -- contiguous: bulk routine
+   local strided = torch.FloatTensor(#specials, 2):select(2, 1):copy(sf)
+   local scalarCopy = T(#specials):copy(strided)                         -- non-contiguous: element loop
+   for i = 1, #specials do
+      local s = T(1); s[1] = sf[i]                                       -- Lua number -> 16-bit cast
+      for _, pair in ipairs({{bulk[i], 'bulk'}, {scalarCopy[i], 'strided copy'}}) do
+         local a, b = pair[1], s[1]
+         local same = (a ~= a and b ~= b) or (a == b and (a ~= 0 or 1 / a == 1 / b))
+         tester:assert(same, string.format('%s special %d (%s): %s gives %s, cast gives %s',
+                                           info.name, i, tostring(sf[i]), pair[2], tostring(a), tostring(b)))
+      end
+   end
    -- every route from a Lua or double value rounds once (no double rounding through float)
    local x = 1 + 2 ^ -(info.mant + 1) + 2 ^ -40      -- just above a tie in the reduced type
    local want = 1 + 2 ^ -info.mant
@@ -325,7 +346,7 @@ end)
 tests.serialization = forTypes(function(info)
    local T = torch[info.name .. 'Tensor']
    local t = torch.FloatTensor(5, 7):uniform(-100, 100):type(info.tensor)
-   t[1][1] = 0 / 0; t[1][2] = math.huge; t[1][3] = -0.0; t[1][4] = 2 ^ (info.emin - info.mant)
+   t[1][1] = 0 / 0; t[1][2] = math.huge; t[1][3] = NEGZERO; t[1][4] = 2 ^ (info.emin - info.mant)
    for _, mode in ipairs({'binary', 'ascii'}) do
       local f = torch.MemoryFile()
       if mode == 'binary' then f:binary() end

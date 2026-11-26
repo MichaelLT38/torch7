@@ -168,6 +168,7 @@ local reals = {ByteTensor='unsigned char',
                LongTensor='int64_t',
                FloatTensor='float',
                HalfTensor='THHalf',
+               BFloat16Tensor='THBFloat16',
                DoubleTensor='double'}
 
 local accreals = {ByteTensor='int64_t',
@@ -177,11 +178,12 @@ local accreals = {ByteTensor='int64_t',
                LongTensor='int64_t',
                FloatTensor='double',
                HalfTensor='float',
+               BFloat16Tensor='float',
                DoubleTensor='double'}
 
 for _,Tensor in ipairs({"ByteTensor", "CharTensor",
                         "ShortTensor", "IntTensor", "LongTensor",
-                        "FloatTensor", "HalfTensor", "DoubleTensor"}) do
+                        "FloatTensor", "HalfTensor", "BFloat16Tensor", "DoubleTensor"}) do
 
    local real = reals[Tensor]
    local accreal = accreals[Tensor]
@@ -913,8 +915,8 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
         {{name=Tensor, default=true, returned=true, method={default='nil'}},
          {name=Tensor, method={default=1}}})
 
-   -- convolutions: not for HalfTensor (they would accumulate into the output in half precision)
-   if Tensor ~= 'HalfTensor' then
+   -- convolutions: not for the 16-bit types (they would accumulate into the output in 16 bits)
+   if Tensor ~= 'HalfTensor' and Tensor ~= 'BFloat16Tensor' then
    wrap("conv2",
         cname("conv2Dmul"),
         {{name=Tensor, default=true, returned=true},
@@ -1052,7 +1054,7 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
          {name='charoption', values={'V', 'F'}, default='V'},
          {name='charoption', default="X", invisible=true}}
      )
-   end -- ~= HalfTensor (convolutions)
+   end -- not 16-bit (convolutions)
 
    for _,name in pairs({'lt','gt','le','ge','eq','ne'}) do
       wrap(name,
@@ -1107,8 +1109,9 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
                {name=real, creturned=true}})
    end
 
-   -- floating-point math and random: float, double and half
-   if Tensor == 'FloatTensor' or Tensor == 'DoubleTensor' or Tensor == 'HalfTensor' then
+   -- floating-point math and random: float, double, half and bfloat16
+   if Tensor == 'FloatTensor' or Tensor == 'DoubleTensor' or Tensor == 'HalfTensor'
+      or Tensor == 'BFloat16Tensor' then
 
       wrap("mean",
            cname("meanall"),
@@ -1564,6 +1567,7 @@ void torch_TensorMath_init(lua_State *L)
   torch_LongTensorMath_init(L);
   torch_FloatTensorMath_init(L);
   torch_HalfTensorMath_init(L);
+  torch_BFloat16TensorMath_init(L);
   torch_DoubleTensorMath_init(L);
   luaT_setfuncs(L, torch_TensorMath__, 0);
 }
