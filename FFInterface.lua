@@ -25,7 +25,7 @@ if ok then
       Char='char',
       Short='short',
       Int='int',
-      Long='long',
+      Long='int64_t',
       Float='float',
       Double='double',
       Half='THHalf'
@@ -87,8 +87,8 @@ typedef struct THRealStorage
       local cdefs = [[
 typedef struct THRealTensor
 {
-    long *size;
-    long *stride;
+    int64_t *size;
+    int64_t *stride;
     int nDimension;
 
     THRealStorage *storage;

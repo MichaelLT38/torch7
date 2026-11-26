@@ -96,5 +96,23 @@ function tests.size_values_beyond_32_bits_in_storage()
    tester:eq(s[1], 2^31 + 5)
 end
 
+function tests.ffi_views_use_64_bit_fields()
+   -- LuaJIT's FFI interface (FFInterface.lua) declares the C structs; sizes,
+   -- strides and LongTensor data are int64_t, not C long (32 bits on Windows)
+   local ok, ffi = pcall(require, 'ffi')
+   if not ok then return end
+   local t = torch.LongTensor({T40 + 5, -3, 7})
+   local seen = {}
+   t:apply(function(x) seen[#seen + 1] = x end)   -- the FFI fast path for contiguous tensors
+   tester:eq(seen, {T40 + 5, -3, 7}, 'LongTensor:apply sees 64-bit values')
+   tester:eq(tonumber(t:data()[0]), T40 + 5, 'LongTensor:data()')
+   local d = torch.DoubleTensor(3, 4):t()
+   local c = d:cdata()
+   tester:eq({c.nDimension, tonumber(c.size[0]), tonumber(c.size[1]), tonumber(c.stride[0]), tonumber(c.stride[1])},
+             {2, 4, 3, 1, 4}, 'cdata sizes and strides')
+   local m = torch.LongTensor({1, 2, 3}):map(torch.LongTensor({T40, T40, T40}), function(x, y) return x + y end)
+   tester:eq(m[3], T40 + 3, 'LongTensor:map with 64-bit values')
+end
+
 tester:add(tests)
 tester:run()
