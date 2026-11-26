@@ -6,3 +6,6 @@
 
 #include "generic/TensorOperator.c"
 #include "THGenerateAllTypes.h"
+
+#include "generic/TensorOperator.c"
+#include "THGenerateReducedTypes.h"

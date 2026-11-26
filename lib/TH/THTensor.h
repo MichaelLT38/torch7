@@ -29,9 +29,15 @@
 #include "generic/THTensorRandom.h"
 #include "THGenerateAllTypes.h"
 
+#include "generic/THTensorRandom.h"
+#include "THGenerateReducedTypes.h"
+
 /* maths */
 #include "generic/THTensorMath.h"
 #include "THGenerateAllTypes.h"
+
+#include "generic/THTensorMath.h"
+#include "THGenerateReducedTypes.h"
 
 /* convolutions */
 #include "generic/THTensorConv.h"

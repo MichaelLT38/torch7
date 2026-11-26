@@ -29,7 +29,7 @@ void THStorage_(copy##TYPENAMESRC)(THStorage *storage, TH##TYPENAMESRC##Storage 
   THArgCheck(storage->size == src->size, 2, "size mismatch"); \
   ptrdiff_t i;								\
   for(i = 0; i < storage->size; i++)					\
-    storage->data[i] = (real)TH_half2float(src->data[i]);		\
+    storage->data[i] = (real)(src->data[i]);		\
 }
 
 #define IMPLEMENT_THStorage_COPY_TO_HALF(TYPENAMESRC)		\
@@ -38,7 +38,7 @@ void THStorage_(copy##TYPENAMESRC)(THStorage *storage, TH##TYPENAMESRC##Storage 
   THArgCheck(storage->size == src->size, 2, "size mismatch"); \
   ptrdiff_t i;								\
   for(i = 0; i < storage->size; i++)					\
-    storage->data[i] = TH_float2half((float)(src->data[i]));		\
+    storage->data[i] = (real)(src->data[i]);		\
 }
 
 #define IMPLEMENT_THStorage_COPY_TO_FROM_HALF(TYPENAMESRC)		\

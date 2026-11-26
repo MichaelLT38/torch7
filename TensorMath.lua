@@ -167,7 +167,7 @@ local reals = {ByteTensor='unsigned char',
                IntTensor='int',
                LongTensor='int64_t',
                FloatTensor='float',
-               HalfTensor='half',
+               HalfTensor='THHalf',
                DoubleTensor='double'}
 
 local accreals = {ByteTensor='int64_t',
@@ -210,7 +210,6 @@ for _,Tensor in ipairs({"ByteTensor", "CharTensor",
              end
    end
 
-   if Tensor ~= 'HalfTensor' then
    wrap("zero",
         cname("zero"),
         {{name=Tensor, returned=true}})
@@ -914,6 +913,8 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
         {{name=Tensor, default=true, returned=true, method={default='nil'}},
          {name=Tensor, method={default=1}}})
 
+   -- convolutions: not for HalfTensor (they would accumulate into the output in half precision)
+   if Tensor ~= 'HalfTensor' then
    wrap("conv2",
         cname("conv2Dmul"),
         {{name=Tensor, default=true, returned=true},
@@ -1051,6 +1052,7 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
          {name='charoption', values={'V', 'F'}, default='V'},
          {name='charoption', default="X", invisible=true}}
      )
+   end -- ~= HalfTensor (convolutions)
 
    for _,name in pairs({'lt','gt','le','ge','eq','ne'}) do
       wrap(name,
@@ -1076,7 +1078,6 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
         cname("nonzero"),
         {{name="IndexTensor", default=true, returned=true},
          {name=Tensor}})
-  end  -- ~= HalfTensor
 
    if Tensor == 'ByteTensor' then
      -- Logical accumulators only apply to ByteTensor
@@ -1106,7 +1107,8 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
                {name=real, creturned=true}})
    end
 
-   if Tensor == 'FloatTensor' or Tensor == 'DoubleTensor' then
+   -- floating-point math and random: float, double and half
+   if Tensor == 'FloatTensor' or Tensor == 'DoubleTensor' or Tensor == 'HalfTensor' then
 
       wrap("mean",
            cname("meanall"),
@@ -1347,6 +1349,10 @@ static void THTensor_random1__(THTensor *self, THGenerator *gen, int64_t b)
                {name=real, default=f.a}})
       end
 
+   end
+
+   -- LAPACK: float and double only
+   if Tensor == 'FloatTensor' or Tensor == 'DoubleTensor' then
       for _,name in ipairs({"gesv","gels"}) do
          interface:wrap(name,
                         cname(name),
@@ -1557,6 +1563,7 @@ void torch_TensorMath_init(lua_State *L)
   torch_IntTensorMath_init(L);
   torch_LongTensorMath_init(L);
   torch_FloatTensorMath_init(L);
+  torch_HalfTensorMath_init(L);
   torch_DoubleTensorMath_init(L);
   luaT_setfuncs(L, torch_TensorMath__, 0);
 }

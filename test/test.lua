@@ -19,35 +19,6 @@ local function maxdiff(x,y)
    end
 end
 
--- workarounds for non-existant functions
-function torch.HalfTensor:__sub(other)
-   return (self:real() - other:real()):half()
-end
-
-function torch.HalfTensor:mean(dim)
-   return self:real():mean(dim):half()
-end
-
-function torch.HalfTensor:abs()
-   return self:real():abs():half()
-end
-
-function torch.HalfTensor:max()
-   return self:real():max()
-end
-
-function torch.HalfTensor:add(a, b)
-   return (self:real():add(a, b:real())):half()
-end
-
-function torch.HalfTensor:reshape(a, b)
-   return (self:real():reshape(a, b)):half()
-end
-
-function torch.HalfTensor:fill(a)
-   return self:real():fill(a):half()
-end
-
 function torchtest.dot()
    local types = {
       ['torch.DoubleTensor'] = 1e-8, -- for ddot

@@ -4,10 +4,6 @@ local myTester = torch.Tester()
 
 local tests = torch.TestSuite()
 
-function torch.HalfTensor:norm()
-   return self:real():norm()
-end
-
 -- checks that an object can be written and unwritten
 -- returns false if an error occurs
 local function serializeAndDeserialize(obj)

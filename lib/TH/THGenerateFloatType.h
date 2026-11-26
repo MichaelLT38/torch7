@@ -9,6 +9,7 @@
 #define Real Float
 #define THInf FLT_MAX
 #define TH_REAL_IS_FLOAT
+#define TH_REAL_IS_FLOATING
 #line 1 TH_GENERIC_FILE
 #include TH_GENERIC_FILE
 #undef accreal
@@ -16,6 +17,7 @@
 #undef Real
 #undef THInf
 #undef TH_REAL_IS_FLOAT
+#undef TH_REAL_IS_FLOATING
 #undef TH_CONVERT_REAL_TO_ACCREAL
 #undef TH_CONVERT_ACCREAL_TO_REAL
 

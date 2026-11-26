@@ -10,4 +10,7 @@
 #include "generic/THVector.h"
 #include "THGenerateAllTypes.h"
 
+#include "generic/THVector.h"
+#include "THGenerateReducedTypes.h"
+
 #endif // TH_VECTOR_INC

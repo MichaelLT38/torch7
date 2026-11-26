@@ -8,4 +8,7 @@
 #include "generic/THBlas.h"
 #include "THGenerateAllTypes.h"
 
+#include "generic/THBlas.h"
+#include "THGenerateReducedTypes.h"
+
 #endif

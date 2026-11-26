@@ -2,6 +2,46 @@
 #define TH_GENERIC_FILE "generic/THTensorMath.c"
 #else
 
+/* Running sums: float for reduced-precision types (half, bfloat16); otherwise
+   real, which keeps the existing types' results unchanged. */
+#undef TH_SUMREAL
+#ifdef TH_REAL_IS_REDUCED
+#define TH_SUMREAL accreal
+#else
+#define TH_SUMREAL real
+#endif
+
+#ifdef TH_REAL_IS_REDUCED
+/* Reductions along a dimension (sum, prod, mean, std, var, norm, cumsum,
+   cumprod) for reduced-precision types run on a float copy and round the
+   result once, so they equal the FloatTensor result rounded (some of their
+   code paths would otherwise accumulate into the 16-bit output). */
+static THFloatTensor *THTensor_(toFloat)(THTensor *t)
+{
+  THFloatTensor *f = THFloatTensor_new();
+  THFloatTensor_resizeNd(f, t->nDimension, t->size, NULL);
+  TH_CONCAT_2(THFloatTensor_copy, Real)(f, t);
+  return f;
+}
+
+static void THTensor_(fromFloat)(THTensor *r_, THFloatTensor *f)
+{
+  THTensor_(resizeNd)(r_, f->nDimension, f->size, NULL);
+  THTensor_(copyFloat)(r_, f);
+  THFloatTensor_free(f);
+}
+
+#define TH_REDUCE_VIA_FLOAT(FN, ...)                          \
+  do {                                                        \
+    THFloatTensor *ft_ = THTensor_(toFloat)(t);               \
+    THFloatTensor *fr_ = THFloatTensor_new();                 \
+    THFloatTensor_##FN(fr_, ft_, __VA_ARGS__);                \
+    THFloatTensor_free(ft_);                                  \
+    THTensor_(fromFloat)(r_, fr_);                            \
+    return;                                                   \
+  } while (0)
+#endif
+
 #ifndef NAN
   #define NAN (nan(NULL))
 #endif
@@ -314,7 +354,7 @@ TH_ITER_KERNEL2(mulLoop, x * value)
 TH_ITER_KERNEL2(divLoop, x / value)
 TH_ITER_KERNEL3(caddLoop, x + value * y)
 TH_ITER_KERNEL3(cmulLoop, x * y)
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 TH_ITER_KERNEL3(cdivLoop, x / y)
 #endif
 
@@ -423,11 +463,7 @@ void THTensor_(nonzero)(THLongTensor *subscript, THTensor *tensor)
   int64_t i = 0;
   int64_t dim;
   int64_t div = 1;
-#ifdef TH_REAL_IS_HALF
-#define IS_NONZERO(val) ((val.x & 0x7fff) != 0)
-#else
 #define IS_NONZERO(val) ((val)!=0)
-#endif
 
   /* First Pass to determine size of subscripts */
   TH_TENSOR_APPLY(real, tensor,
@@ -739,6 +775,12 @@ void THTensor_(scatterFill)(THTensor *tensor, int dim, THLongTensor *index, real
 accreal THTensor_(dot)(THTensor *tensor, THTensor *src)
 {
   accreal sum = 0;
+#ifdef TH_REAL_IS_REDUCED
+  /* float accumulation all the way: THBlas_(dot) returns a 16-bit real */
+  TH_TENSOR_APPLY2(real, tensor, real, src,
+                   sum += (accreal)*tensor_data * (accreal)*src_data;);
+  return sum;
+#endif
   /* we use a trick here. careful with that. */
   TH_TENSOR_APPLY2(real, tensor, real, src,
                    int64_t sz = (tensor_size-tensor_i < src_size-src_i ? tensor_size-tensor_i : src_size-src_i);
@@ -752,18 +794,27 @@ accreal THTensor_(dot)(THTensor *tensor, THTensor *src)
 }
 
 
+/* libc classification macros dispatch on sizeof(x) and do not know 2-byte
+   floats (mingw traps), so reduced types are tested as float. */
+#undef TH_ISNAN_ARG
+#ifdef TH_REAL_IS_REDUCED
+#define TH_ISNAN_ARG(val) ((float)(val))
+#else
+#define TH_ISNAN_ARG(val) (val)
+#endif
+
 #undef th_isnan
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 #define th_isnan(val) \
-(isnan(val))
+(isnan(TH_ISNAN_ARG(val)))
 #else
 #define th_isnan(val) (0)
 #endif
 
 #undef th_isnan_break
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 #define th_isnan_break(val) \
-if (isnan(val)) break;
+if (isnan(TH_ISNAN_ARG(val))) break;
 #else
 #define th_isnan_break(val)
 #endif
@@ -926,7 +977,7 @@ void THTensor_(mul)(THTensor *r_, THTensor *t, real value)
 # define TH_UNSIGNED_REAL unsigned real
 #endif
 
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
 /* ---------------------------------------------------------------------------
  * Integer division helpers, shared by div/cdiv, fmod/cfmod (truncating) and
  * floordiv/cfloordiv, remainder/cremainder (flooring). In C, x / 0 and
@@ -981,7 +1032,7 @@ static void THTensor_(checkNoZeroDivisor)(THTensor *src, int argNumber)
 
 void THTensor_(div)(THTensor *r_, THTensor *t, real value)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
   THArgCheck(value != 0, 3, "integer division by zero");
 #if !defined(TH_REAL_IS_BYTE)
   if (value == -1) {  /* MIN / -1 traps on x86: negate (wrapping) instead */
@@ -1000,7 +1051,7 @@ void THTensor_(div)(THTensor *r_, THTensor *t, real value)
   }
 }
 
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
 /* Integer shift amounts must lie in [0, bits-1]: anything else is undefined
    behavior in C (on x86 the count is silently masked, elsewhere it differs).
    A shift by 0 is the identity. Checked before any (parallel) work starts. */
@@ -1029,12 +1080,10 @@ static void THTensor_(checkShiftAmounts)(THTensor *src, int argNumber)
 
 void THTensor_(lshift)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
   return THTensor_(mul)(r_, t, powf(2, value));
 #elif defined(TH_REAL_IS_DOUBLE)
   return THTensor_(mul)(r_, t, pow(2, value));
-#elif defined(TH_REAL_IS_HALF)
-  return THError("lshift is not supported for torch.HalfTensor");
 #else
   THTensor_(checkShiftAmount)(value, 3);
   THTensor_(resizeAs)(r_, t);
@@ -1065,12 +1114,10 @@ void THTensor_(lshift)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(rshift)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
   return THTensor_(div)(r_, t, powf(2, value));
 #elif defined(TH_REAL_IS_DOUBLE)
   return THTensor_(div)(r_, t, pow(2, value));
-#elif defined(TH_REAL_IS_HALF)
-  return THError("rshift is not supported for torch.HalfTensor");
 #else
   /* NOTE: on signed types this is a LOGICAL shift (zero-filling, via the
      unsigned type). For an arithmetic shift (floor toward -inf) use arshift. */
@@ -1103,7 +1150,7 @@ void THTensor_(rshift)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(fmod)(THTensor *r_, THTensor *t, real value)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+#if !defined(TH_REAL_IS_FLOATING)
   THArgCheck(value != 0, 3, "integer division by zero");
 #endif
   THTensor_(resizeAs)(r_, t);
@@ -1115,14 +1162,14 @@ void THTensor_(fmod)(THTensor *r_, THTensor *t, real value)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
       for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
           rp[i] = fmod(tp[i], value);
 #else
           rp[i] = THTensor_(modTruncInt)(tp[i], value);
 #endif
       }
   } else {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = fmod(*t_data, value););
 #else
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(modTruncInt)(*t_data, value););
@@ -1132,7 +1179,7 @@ void THTensor_(fmod)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(remainder)(THTensor *r_, THTensor *t, real value)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+#if !defined(TH_REAL_IS_FLOATING)
   THArgCheck(value != 0, 3, "integer division by zero");
 #endif
   THTensor_(resizeAs)(r_, t);
@@ -1143,14 +1190,14 @@ void THTensor_(remainder)(THTensor *r_, THTensor *t, real value)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
       for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
           rp[i] = (value == 0)? NAN : tp[i] - value * floor(tp[i] / value);
 #else
           rp[i] = THTensor_(modFloorInt)(tp[i], value);
 #endif
       }
   } else {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (value == 0)? NAN : *t_data - value * floor(*t_data / value););
 #else
       TH_TENSOR_APPLY2(real, r_, real, t, *r__data = THTensor_(modFloorInt)(*t_data, value););
@@ -1160,7 +1207,7 @@ void THTensor_(remainder)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(bitand)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("bitand is only supported for integer type tensors");
 #else
   THTensor_(resizeAs)(r_, t);
@@ -1183,7 +1230,7 @@ void THTensor_(bitand)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(bitor)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("bitor is only supported for integer type tensors");
 #else
   THTensor_(resizeAs)(r_, t);
@@ -1206,7 +1253,7 @@ void THTensor_(bitor)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(bitxor)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("bitxor is only supported for integer type tensors");
 #else
   THTensor_(resizeAs)(r_, t);
@@ -1293,14 +1340,12 @@ void THTensor_(cmul)(THTensor *r_, THTensor *t, THTensor *src)
     }                                                                         \
   }
 
-#if !defined(TH_REAL_IS_HALF)
 TH_ITER_KERNEL3(bcastPowLoop, pow(x, y))
 TH_ITER_KERNEL3(bcastMaxLoop, x > y ? x : y)
 TH_ITER_KERNEL3(bcastMinLoop, x < y ? x : y)
 TH_ITER_KERNEL4(bcastAddcmulLoop, x + value * y * z)
 TH_ITER_KERNEL4(bcastAddcdivLoop, x + value * y / z)
-#endif
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
 TH_ITER_KERNEL3(bcastDivTruncLoop, THTensor_(divTruncInt)(x, y))
 TH_ITER_KERNEL3(bcastModTruncLoop, THTensor_(modTruncInt)(x, y))
 TH_ITER_KERNEL3(bcastDivFloorLoop, THTensor_(divFloorInt)(x, y))
@@ -1319,14 +1364,14 @@ TH_ITER_KERNEL3(bcastRshiftLoop, (real)(((real)x) >> y))
 TH_ITER_KERNEL3(bcastLshiftLoop, (real)(((TH_UNSIGNED_REAL)x) << y))
 TH_ITER_KERNEL3(bcastRshiftLoop, (real)(((TH_UNSIGNED_REAL)x) >> y))
 #endif
-#elif defined(TH_REAL_IS_FLOAT)
+#elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
 TH_ITER_KERNEL3(bcastLshiftLoop, x * powf(2, y))
 TH_ITER_KERNEL3(bcastRshiftLoop, x / powf(2, y))
 #elif defined(TH_REAL_IS_DOUBLE)
 TH_ITER_KERNEL3(bcastLshiftLoop, x * pow(2, y))
 TH_ITER_KERNEL3(bcastRshiftLoop, x / pow(2, y))
 #endif
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 TH_ITER_KERNEL3(bcastFmodLoop, fmod(x, y))
 TH_ITER_KERNEL3(bcastRemainderLoop, (y == 0) ? NAN : x - y * floor(x / y))
 TH_ITER_KERNEL3(bcastFloordivLoop, (real)floor((double)x / (double)y))
@@ -1355,7 +1400,7 @@ void THTensor_(cpow)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
   /* integer: reject zero divisors up front; MIN / -1 wraps (see divTruncInt) */
   THTensor_(checkNoZeroDivisor)(src, 3);
   if (THTensor_(broadcast2)("cdiv", r_, t, src, THTensor_(bcastDivTruncLoop), NULL)) return;
@@ -1368,7 +1413,7 @@ void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
   if (THTensor_(isContiguous)(r_) && THTensor_(isContiguous)(t) && THTensor_(isContiguous)(src) && THTensor_(nElement)(r_) == THTensor_(nElement)(src)) {
     TH_TENSOR_APPLY3_CONTIG(real, r_, real, t, real, src, THVector_(cdiv)(r__data, t_data, src_data, r__len););
   } else {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
     if (!THTensor_(iterate3)(r_, t, src, THTensor_(cdivLoop), NULL))
 #endif
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data / *src_data;);
@@ -1377,10 +1422,7 @@ void THTensor_(cdiv)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_HALF)
-  return THError("clshift is not supported for torch.HalfTensor");
-#endif
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
   THTensor_(checkShiftAmounts)(src, 3);
 #endif
   if (THTensor_(broadcast2)("clshift", r_, t, src, THTensor_(bcastLshiftLoop), NULL)) return;
@@ -1396,7 +1438,7 @@ void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
     for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
       rp[i] = tp[i] * powf(2, sp[i]);
 #elif defined(TH_REAL_IS_DOUBLE)
       rp[i] = tp[i] * pow(2, sp[i]);
@@ -1407,7 +1449,7 @@ void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
 #endif
     }
   } else {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data * powf(2, *src_data););
 #elif defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data * pow(2, *src_data););
@@ -1421,10 +1463,7 @@ void THTensor_(clshift)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_HALF)
-  return THError("crshift is not supported for torch.HalfTensor");
-#endif
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
   THTensor_(checkShiftAmounts)(src, 3);
 #endif
   if (THTensor_(broadcast2)("crshift", r_, t, src, THTensor_(bcastRshiftLoop), NULL)) return;
@@ -1440,7 +1479,7 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
     for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
       rp[i] = tp[i] / powf(2, sp[i]);
 #elif defined(TH_REAL_IS_DOUBLE)
       rp[i] = tp[i] / pow(2, sp[i]);
@@ -1451,7 +1490,7 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
 #endif
     }
   } else {
-#if defined(TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data / powf(2, *src_data););
 #elif defined(TH_REAL_IS_DOUBLE)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = *t_data / pow(2, *src_data););
@@ -1471,7 +1510,7 @@ void THTensor_(crshift)(THTensor *r_, THTensor *t, THTensor *src)
  * ------------------------------------------------------------------------- */
 void THTensor_(arshift)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   (void)r_; (void)t; (void)value;
   THError("arshift is only defined for integer tensors, not %s",
           TH_CONCAT_STRING_3(torch., Real, Tensor));
@@ -1485,7 +1524,7 @@ void THTensor_(arshift)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(carshift)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   (void)r_; (void)t; (void)src;
   THError("carshift is only defined for integer tensors, not %s",
           TH_CONCAT_STRING_3(torch., Real, Tensor));
@@ -1504,10 +1543,7 @@ void THTensor_(carshift)(THTensor *r_, THTensor *t, THTensor *src)
  * ------------------------------------------------------------------------- */
 void THTensor_(floordiv)(THTensor *r_, THTensor *t, real value)
 {
-#if defined(TH_REAL_IS_HALF)
-  (void)r_; (void)t; (void)value;
-  THError("floordiv is not supported for torch.HalfTensor");
-#elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY2(real, r_, real, t, *r__data = (real)floor((double)*t_data / (double)value););
 #else
@@ -1519,10 +1555,7 @@ void THTensor_(floordiv)(THTensor *r_, THTensor *t, real value)
 
 void THTensor_(cfloordiv)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_HALF)
-  (void)r_; (void)t; (void)src;
-  THError("cfloordiv is not supported for torch.HalfTensor");
-#elif defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
   if (THTensor_(broadcast2)("cfloordiv", r_, t, src, THTensor_(bcastFloordivLoop), NULL)) return;
   THTensor_(resizeAs)(r_, t);
   TH_TENSOR_APPLY3(real, r_, real, t, real, src,
@@ -1536,14 +1569,14 @@ void THTensor_(cfloordiv)(THTensor *r_, THTensor *t, THTensor *src)
 #endif
 }
 
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE) && !defined(TH_REAL_IS_HALF)
+#if !defined(TH_REAL_IS_FLOATING)
 #undef TH_SHIFT_BITS
 #endif
 #undef TH_UNSIGNED_REAL
 
 void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+#if !defined(TH_REAL_IS_FLOATING)
   THTensor_(checkNoZeroDivisor)(src, 3);
 #endif
   if (THTensor_(broadcast2)("cfmod", r_, t, src, THTensor_(bcastCfmodLoop), NULL)) return;
@@ -1556,14 +1589,14 @@ void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
       for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
           rp[i] = fmod(tp[i], sp[i]);
 #else
           rp[i] = THTensor_(modTruncInt)(tp[i], sp[i]);
 #endif
       }
   } else {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = fmod(*t_data, *src_data););
 #else
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(modTruncInt)(*t_data, *src_data););
@@ -1574,7 +1607,7 @@ void THTensor_(cfmod)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if !defined(TH_REAL_IS_FLOAT) && !defined(TH_REAL_IS_DOUBLE)
+#if !defined(TH_REAL_IS_FLOATING)
   THTensor_(checkNoZeroDivisor)(src, 3);
 #endif
   if (THTensor_(broadcast2)("cremainder", r_, t, src, THTensor_(bcastCremainderLoop), NULL)) return;
@@ -1587,14 +1620,14 @@ void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
       ptrdiff_t i;
       #pragma omp parallel for if(sz > TH_OMP_OVERHEAD_THRESHOLD) private(i)
       for (i=0; i<sz; i++) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
           rp[i] = (sp[i] == 0)? NAN : tp[i] - sp[i] * floor(tp[i] / sp[i]);
 #else
           rp[i] = THTensor_(modFloorInt)(tp[i], sp[i]);
 #endif
       }
   } else {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = (*src_data == 0)? NAN : *t_data - *src_data * floor(*t_data / *src_data););
 #else
       TH_TENSOR_APPLY3(real, r_, real, t, real, src, *r__data = THTensor_(modFloorInt)(*t_data, *src_data););
@@ -1605,7 +1638,7 @@ void THTensor_(cremainder)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cbitand)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("cbitand is only supported for integer type tensors");
 #else
   if (THTensor_(broadcast2)("cbitand", r_, t, src, THTensor_(bcastAndLoop), NULL)) return;
@@ -1631,7 +1664,7 @@ void THTensor_(cbitand)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cbitor)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("cbitor is only supported for integer type tensors");
 #else
   if (THTensor_(broadcast2)("cbitor", r_, t, src, THTensor_(bcastOrLoop), NULL)) return;
@@ -1657,7 +1690,7 @@ void THTensor_(cbitor)(THTensor *r_, THTensor *t, THTensor *src)
 
 void THTensor_(cbitxor)(THTensor *r_, THTensor *t, THTensor *src)
 {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return THError("cbitxor is only supported for integer type tensors");
 #else
   if (THTensor_(broadcast2)("cbitxor", r_, t, src, THTensor_(bcastXorLoop), NULL)) return;
@@ -1811,9 +1844,9 @@ void THTensor_(match)(THTensor *r_, THTensor *m1, THTensor *m2, real gain)
   for (i=0; i<N1; i++) {
     int64_t j,k;
     for (j=0; j<N2; j++) {
-      real sum = 0;
+      TH_SUMREAL sum = 0;
       for (k=0; k<dim; k++) {
-        real term = m1_p[ i*dim + k ] - m2_p[ j*dim + k ];
+        TH_SUMREAL term = m1_p[ i*dim + k ] - m2_p[ j*dim + k ];
         sum += term*term;
       }
       r_p[ i*N2 + j ] = gain * sum;
@@ -2435,6 +2468,9 @@ void THTensor_(min)(THTensor *values_, THLongTensor *indices_, THTensor *t, int 
 
 void THTensor_(sum)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(sum, dimension, keepdim);
+#endif
   THLongStorage *dim;
 
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 2, "dimension %d out of range",
@@ -2473,6 +2509,9 @@ void THTensor_(sum)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 
 void THTensor_(prod)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(prod, dimension, keepdim);
+#endif
   THLongStorage *dim;
 
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 2, "dimension %d out of range",
@@ -2511,6 +2550,9 @@ void THTensor_(prod)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 
 void THTensor_(cumsum)(THTensor *r_, THTensor *t, int dimension)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(cumsum, dimension);
+#endif
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 2, "dimension %d out of range",
       dimension + TH_INDEX_BASE);
 
@@ -2528,6 +2570,9 @@ void THTensor_(cumsum)(THTensor *r_, THTensor *t, int dimension)
 
 void THTensor_(cumprod)(THTensor *r_, THTensor *t, int dimension)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(cumprod, dimension);
+#endif
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 2, "dimension %d out of range",
       dimension + TH_INDEX_BASE);
 
@@ -2767,7 +2812,7 @@ void THTensor_(range)(THTensor *r_, accreal xmin, accreal xmax, accreal step)
 }
 
 void THTensor_(arange)(THTensor *r_, accreal xmin, accreal xmax, accreal step) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
   int m = fmod(xmax - xmin,step) == 0;
 #else
   int m = (xmax - xmin) % step == 0;
@@ -3658,9 +3703,9 @@ TENSOR_IMPLEMENT_LOGICAL_SUM(logicalany, ||, 0)
 #endif /* Byte only part */
 
 /* floating point only now */
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 
-#if defined (TH_REAL_IS_FLOAT)
+#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_REDUCED)
 #define TH_MATH_NAME(fn) fn##f
 #else
 #define TH_MATH_NAME(fn) fn
@@ -3742,6 +3787,9 @@ void THTensor_(lerp)(THTensor *r_, THTensor *a, THTensor *b, real weight)
 
 void THTensor_(mean)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(mean, dimension, keepdim);
+#endif
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 2, "invalid dimension %d",
       dimension + TH_INDEX_BASE);
 
@@ -3751,6 +3799,9 @@ void THTensor_(mean)(THTensor *r_, THTensor *t, int dimension, int keepdim)
 
 void THTensor_(std)(THTensor *r_, THTensor *t, int dimension, int biased, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(std, dimension, biased, keepdim);
+#endif
   THLongStorage *dim;
 
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 3, "invalid dimension %d",
@@ -3796,6 +3847,9 @@ void THTensor_(std)(THTensor *r_, THTensor *t, int dimension, int biased, int ke
 
 void THTensor_(var)(THTensor *r_, THTensor *t, int dimension, int biased, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(var, dimension, biased, keepdim);
+#endif
   THLongStorage *dim;
 
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 3, "invalid dimension %d",
@@ -3841,6 +3895,9 @@ void THTensor_(var)(THTensor *r_, THTensor *t, int dimension, int biased, int ke
 
 void THTensor_(norm)(THTensor *r_, THTensor *t, real value, int dimension, int keepdim)
 {
+#ifdef TH_REAL_IS_REDUCED
+  TH_REDUCE_VIA_FLOAT(norm, (float)value, dimension, keepdim);
+#endif
   THLongStorage *dim;
 
   THArgCheck(dimension >= 0 && dimension < THTensor_(nDimension)(t), 3, "invalid dimension %d",
@@ -3944,7 +4001,7 @@ void THTensor_(renorm)(THTensor *res, THTensor *src, real value, int dimension, 
 
 accreal THTensor_(dist)(THTensor *tensor, THTensor *src, real value)
 {
-  real sum = 0;
+  TH_SUMREAL sum = 0;
   TH_TENSOR_APPLY2(real, tensor, real, src,
                    sum += TH_MATH_NAME(pow)(
                      TH_MATH_NAME(fabs)(*tensor_data - *src_data), value););

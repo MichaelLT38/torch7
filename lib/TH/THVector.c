@@ -26,5 +26,11 @@
 #include "generic/THVectorDefault.c"
 #include "THGenerateAllTypes.h"
 
+#include "generic/THVectorDefault.c"
+#include "THGenerateReducedTypes.h"
+
 #include "generic/THVectorDispatch.c"
 #include "THGenerateAllTypes.h"
+
+#include "generic/THVectorDispatch.c"
+#include "THGenerateReducedTypes.h"

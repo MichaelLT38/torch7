@@ -39,6 +39,98 @@ TH_EXTERNC void sgemm_(char *transa, char *transb, int *m, int *n, int *k, float
 
 
 
+#ifdef TH_REAL_IS_REDUCED
+/* ---------------------------------------------------------------------------
+ * Reduced-precision types (half, bfloat16) accumulate in float, like PyTorch:
+ * dot and gemv keep float running sums, and gemm converts op(A), op(B) and C
+ * to float, runs the float GEMM (built-in kernel or BLAS) and rounds C once.
+ * So a HalfTensor product equals the FloatTensor product of the same values,
+ * rounded to half.
+ * ------------------------------------------------------------------------- */
+/* contiguous bulk conversions to and from float */
+#undef THBLAS_REDUCED_TO_FLOAT
+#undef THBLAS_FLOAT_TO_REDUCED
+#if defined(TH_REAL_IS_HALF)
+#define THBLAS_REDUCED_TO_FLOAT(dst, src, n) TH_halfToFloatN((dst), (src), (n))
+#define THBLAS_FLOAT_TO_REDUCED(dst, src, n) TH_floatToHalfN((dst), (src), (n))
+#else
+#define THBLAS_REDUCED_TO_FLOAT(dst, src, n) \
+  do { for (int64_t q_ = 0; q_ < (n); q_++) (dst)[q_] = (float)(src)[q_]; } while (0)
+#define THBLAS_FLOAT_TO_REDUCED(dst, src, n) \
+  do { for (int64_t q_ = 0; q_ < (n); q_++) (dst)[q_] = (real)(src)[q_]; } while (0)
+#endif
+
+static accreal THBlas_(dotReduced)(int64_t n, const real *x, int64_t incx, const real *y, int64_t incy)
+{
+  accreal sum = 0;
+  for (int64_t i = 0; i < n; i++)
+    sum += (accreal)x[i*incx] * (accreal)y[i*incy];
+  return sum;
+}
+
+static void THBlas_(gemvReduced)(int trans, int64_t m, int64_t n, real alpha, const real *a, int64_t lda,
+                                 const real *x, int64_t incx, real beta, real *y, int64_t incy)
+{
+  const accreal fa = (accreal)alpha, fb = (accreal)beta;
+  if (trans) {
+    for (int64_t i = 0; i < n; i++) {
+      accreal s = 0;
+      const real *row = a + lda * i;
+      for (int64_t j = 0; j < m; j++)
+        s += (accreal)row[j] * (accreal)x[j*incx];
+      y[i*incy] = (real)(fb == 0 ? fa * s : fb * (accreal)y[i*incy] + fa * s);
+    }
+  } else {
+    accreal *acc = THAlloc(sizeof(accreal) * (m > 0 ? m : 1));
+    for (int64_t i = 0; i < m; i++) acc[i] = 0;
+    for (int64_t j = 0; j < n; j++) {
+      const accreal z = (accreal)x[j*incx];
+      const real *col = a + lda * j;
+      for (int64_t i = 0; i < m; i++)
+        acc[i] += z * (accreal)col[i];
+    }
+    for (int64_t i = 0; i < m; i++)
+      y[i*incy] = (real)(fb == 0 ? fa * acc[i] : fb * (accreal)y[i*incy] + fa * acc[i]);
+    THFree(acc);
+  }
+}
+
+static void THBlas_(gemmReduced)(int transa, int transb, int64_t m, int64_t n, int64_t k, real alpha,
+                                 const real *a, int64_t lda, const real *b, int64_t ldb,
+                                 real beta, real *c, int64_t ldc)
+{
+  if (m <= 0 || n <= 0)
+    return;
+  /* A and B are converted as stored (column by column, packed), and the
+     transposition flags go to the float GEMM unchanged. */
+  const int64_t ra = transa ? k : m, ca = transa ? m : k;   /* stored A: ra x ca */
+  const int64_t rb = transb ? n : k, cb = transb ? k : n;   /* stored B: rb x cb */
+  const int64_t ldaf = ra > 0 ? ra : 1, ldbf = rb > 0 ? rb : 1;
+  float *af = THAlloc(sizeof(float) * (ldaf * ca > 0 ? ldaf * ca : 1));
+  float *bf = THAlloc(sizeof(float) * (ldbf * cb > 0 ? ldbf * cb : 1));
+  float *cf = THAlloc(sizeof(float) * m * n);
+  const float fb = (float)beta;
+  for (int64_t j = 0; j < ca; j++)
+    THBLAS_REDUCED_TO_FLOAT(af + j*ldaf, a + j*lda, ra);
+  for (int64_t j = 0; j < cb; j++)
+    THBLAS_REDUCED_TO_FLOAT(bf + j*ldbf, b + j*ldb, rb);
+  for (int64_t j = 0; j < n; j++) {
+    if (fb == 0) {
+      for (int64_t i = 0; i < m; i++) cf[i + j*m] = 0.0f;
+    } else {
+      THBLAS_REDUCED_TO_FLOAT(cf + j*m, c + j*ldc, m);
+    }
+  }
+  THFloatBlas_gemm(transa ? 't' : 'n', transb ? 't' : 'n', m, n, k, (float)alpha,
+                   af, ldaf, bf, ldbf, fb, cf, m);
+  for (int64_t j = 0; j < n; j++)
+    THBLAS_FLOAT_TO_REDUCED(c + j*ldc, cf + j*m, m);
+  THFree(af);
+  THFree(bf);
+  THFree(cf);
+}
+#endif /* TH_REAL_IS_REDUCED */
+
 void THBlas_(swap)(int64_t n, real *x, int64_t incx, real *y, int64_t incy)
 {
   if(n == 1)
@@ -166,6 +258,9 @@ void THBlas_(axpy)(int64_t n, real a, real *x, int64_t incx, real *y, int64_t in
 
 real THBlas_(dot)(int64_t n, real *x, int64_t incx, real *y, int64_t incy)
 {
+#ifdef TH_REAL_IS_REDUCED
+  return (real)THBlas_(dotReduced)(n, x, incx, y, incy);
+#endif
   if(n == 1)
   {
     incx = 1;
@@ -199,6 +294,10 @@ void THBlas_(gemv)(char trans, int64_t m, int64_t n, real alpha, real *a, int64_
 {
   if(n == 1)
     lda = m;
+#ifdef TH_REAL_IS_REDUCED
+  THBlas_(gemvReduced)((trans == 'T') || (trans == 't'), m, n, alpha, a, lda, x, incx, beta, y, incy);
+  return;
+#endif
 
 #if defined(USE_BLAS) && (defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_FLOAT))
   if( (m <= INT_MAX) && (n <= INT_MAX) &&
@@ -280,12 +379,18 @@ void THBlas_(ger)(int64_t m, int64_t n, real alpha, real *x, int64_t incx, real 
     for(j = 0; j < n; j++)
     {
       real *column_ = a+j*lda;
+#ifdef TH_REAL_IS_REDUCED
+      accreal z = (accreal)alpha*(accreal)y[j*incy];   /* not rounded to 16 bits */
+#else
       real z = alpha*y[j*incy];
+#endif
       for(i = 0; i < m; i++)
         column_[i] += z*x[i*incx] ;
     }
   }
 }
+
+#ifndef TH_REAL_IS_REDUCED
 
 /* ---------------------------------------------------------------------------
  * Built-in blocked GEMM (Phase 3): C = beta*C + alpha*op(A)*op(B),
@@ -456,6 +561,7 @@ static void THBlas_(gemmBlocked)(int transa, int transb, int64_t m, int64_t n, i
 #undef THGEMM_MACRO_KERNEL_BODY
 #undef THGEMM_VL
 #undef THGEMM_NR
+#endif /* TH_REAL_IS_REDUCED */
 
 void THBlas_(gemm)(char transa, char transb, int64_t m, int64_t n, int64_t k, real alpha, real *a, int64_t lda, real *b, int64_t ldb, real beta, real *c, int64_t ldc)
 {
@@ -487,6 +593,9 @@ void THBlas_(gemm)(char transa, char transb, int64_t m, int64_t n, int64_t k, re
       ldb = k;
   }
 
+#ifdef TH_REAL_IS_REDUCED
+  THBlas_(gemmReduced)(transa_, transb_, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+#else
 #if defined(USE_BLAS) && (defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_FLOAT))
   if( (m <= INT_MAX) && (n <= INT_MAX) && (k <= INT_MAX) && (lda <= INT_MAX)  && (ldb <= INT_MAX) && (ldc <= INT_MAX) )
   {
@@ -592,6 +701,7 @@ void THBlas_(gemm)(char transa, char transb, int64_t m, int64_t n, int64_t k, re
       }
     }
   }
+#endif /* TH_REAL_IS_REDUCED */
 }
 
 #endif

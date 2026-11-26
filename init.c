@@ -33,6 +33,7 @@ extern void torch_ShortTensorOperator_init(lua_State *L);
 extern void torch_IntTensorOperator_init(lua_State *L);
 extern void torch_LongTensorOperator_init(lua_State *L);
 extern void torch_FloatTensorOperator_init(lua_State *L);
+extern void torch_HalfTensorOperator_init(lua_State *L);
 extern void torch_DoubleTensorOperator_init(lua_State *L);
 
 
@@ -75,6 +76,7 @@ int luaopen_libtorch(lua_State *L)
   torch_IntTensorOperator_init(L);
   torch_LongTensorOperator_init(L);
   torch_FloatTensorOperator_init(L);
+  torch_HalfTensorOperator_init(L);
   torch_DoubleTensorOperator_init(L);
 
   torch_Timer_init(L);

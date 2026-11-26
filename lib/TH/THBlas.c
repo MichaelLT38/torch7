@@ -35,3 +35,6 @@ static int THBlas_cpuHasAvx2Fma(void)
 
 #include "generic/THBlas.c"
 #include "THGenerateAllTypes.h"
+
+#include "generic/THBlas.c"
+#include "THGenerateReducedTypes.h"

@@ -227,6 +227,7 @@ INSTALL(FILES
   THGenerateDoubleType.h
   THGenerateFloatType.h
   THGenerateHalfType.h
+  THGenerateReducedTypes.h
   THGenerateLongType.h
   THGenerateIntType.h
   THGenerateShortType.h

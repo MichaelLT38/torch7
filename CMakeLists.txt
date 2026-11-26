@@ -105,9 +105,21 @@ IF(TORCH_BUILD_TESTS)
     COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_returns.lua"
             "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  ADD_TEST(NAME lua.reduced
+    COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/run_lua_file.lua"
+            "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test/test_reduced.lua"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  # the same with the AVX2/F16C kernels off (scalar conversions, generic GEMM)
+  ADD_TEST(NAME lua.reduced.noavx2
+    COMMAND "${LUA}" "${CMAKE_CURRENT_SOURCE_DIR}/test/run_lua_file.lua"
+            "${TORCH_STAGE_LUA}" "${CMAKE_BINARY_DIR}" "${CMAKE_SHARED_MODULE_SUFFIX}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/test/test_reduced.lua"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  SET_TESTS_PROPERTIES(lua.reduced.noavx2 PROPERTIES ENVIRONMENT "TH_NO_AVX2=1")
   IF(WIN32)
     # Windows resolves libTH.dll/libluaT.dll through PATH.
-    SET_TESTS_PROPERTIES(lua.torch lua.int64 lua.writeObject lua.intops lua.returns PROPERTIES
+    SET_TESTS_PROPERTIES(lua.torch lua.int64 lua.writeObject lua.intops lua.returns lua.reduced lua.reduced.noavx2 PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${CMAKE_BINARY_DIR}")
   ENDIF()
 ENDIF()

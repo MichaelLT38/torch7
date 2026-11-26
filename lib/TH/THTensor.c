@@ -24,8 +24,14 @@
 #include "generic/THTensorRandom.c"
 #include "THGenerateAllTypes.h"
 
+#include "generic/THTensorRandom.c"
+#include "THGenerateReducedTypes.h"
+
 #include "generic/THTensorMath.c"
 #include "THGenerateAllTypes.h"
+
+#include "generic/THTensorMath.c"
+#include "THGenerateReducedTypes.h"
 
 #include "generic/THTensorConv.c"
 #include "THGenerateAllTypes.h"

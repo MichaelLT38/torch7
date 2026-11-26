@@ -9,18 +9,14 @@
 #undef REAL_TO_LUA_NUMBER
 #undef LUA_NUMBER_TO_REAL
 
-#if defined(TH_REAL_IS_HALF)
-# define REAL_TO_LUA_NUMBER(n)   (lua_Number)TH_half2float(n)
-# define LUA_NUMBER_TO_REAL(n)    TH_float2half((lua_Number)n)
-#else
+/* reduced-precision reals (THHalf) are native arithmetic types: one correctly rounded cast */
 # define REAL_TO_LUA_NUMBER(n)   (lua_Number)(n)
-# define LUA_NUMBER_TO_REAL(n)   (real)n
-#endif
+# define LUA_NUMBER_TO_REAL(n)   (real)(n)
 
 
 
 static void luaG_(pushreal)(lua_State *L, real n) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF) || LUA_VERSION_NUM < 503
+#if defined(TH_REAL_IS_FLOATING) || LUA_VERSION_NUM < 503
   lua_pushnumber(L, REAL_TO_LUA_NUMBER(n));
 #elif defined(TH_REAL_IS_BYTE) || defined(TH_REAL_IS_CHAR) || defined(TH_REAL_IS_SHORT) \
   || defined(TH_REAL_IS_INT) || defined(TH_REAL_IS_LONG)
@@ -31,7 +27,7 @@ static void luaG_(pushreal)(lua_State *L, real n) {
 }
 
 static real luaG_(checkreal)(lua_State *L, int idx) {
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE) || defined(TH_REAL_IS_HALF)
+#if defined(TH_REAL_IS_FLOATING)
   return LUA_NUMBER_TO_REAL(luaL_checknumber(L, idx));
 #elif defined(TH_REAL_IS_BYTE) || defined(TH_REAL_IS_CHAR) || defined(TH_REAL_IS_SHORT) || defined(TH_REAL_IS_INT) || defined(TH_REAL_IS_LONG)
         int type = lua_type(L, idx);

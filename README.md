@@ -76,6 +76,25 @@ allocation fails.
   and the tensor forms of `lt`, `le`, `gt`, `ge`, `eq`, `ne`. An in-place call
   (`a:add(b)`) needs `a` to already have the broadcast shape. `copy` still only
   needs the same number of elements.
+* **`HalfTensor` does math.** Upstream could only store and copy half-precision
+  tensors. Now they support the same element-wise, comparison, reduction,
+  random and BLAS operations as `FloatTensor` (not LAPACK or the `conv2`/`conv3`
+  family). Values are IEEE binary16 (GCC's `_Float16`), and every operation
+  computes in float and rounds once: a `HalfTensor` result equals the
+  `FloatTensor` result on the same values, rounded to half. Sums, means,
+  products, norms and matrix products accumulate in float, so `mean` of equal
+  values is exact and an all-ones dot product of length 4096 is 4096.
+  * Converting a Lua number or a `DoubleTensor` to half now rounds once. Upstream
+    went through float first, which in rare ties gave the neighbouring value.
+  * NaNs keep their sign and payload. Upstream rewrote every NaN to `0x7fff`.
+    All other values convert bit for bit as before, and the file format is
+    unchanged.
+  * Float↔half copies and the conversions inside half matrix products use F16C
+    (8 values per instruction) on CPUs that have it. `TH_NO_AVX2=1` turns this
+    off, as it does for the other AVX2 kernels.
+  * Upstream's `test.lua` replaced several `HalfTensor` methods (`mean`, `abs`,
+    `max`, `add`, `fill`, …) with float-based Lua stand-ins, and `fill` didn't
+    even fill in place. Those stand-ins are gone.
 
 Installing with luarocks still works: `luarocks make rocks/torch-scm-1.rockspec`.
 

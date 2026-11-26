@@ -18,6 +18,8 @@ void THTensor_(random)(THTensor *self, THGenerator *_generator)
   TH_TENSOR_APPLY(real, self, *self_data = (float)(THRandom_random(_generator) % ((1UL << FLT_MANT_DIG)+1)););
 #elif defined(TH_REAL_IS_DOUBLE)
   TH_TENSOR_APPLY(real, self, *self_data = (double)(THRandom_random(_generator) % ((1ULL << DBL_MANT_DIG)+1)););
+#elif defined(TH_REAL_IS_HALF)
+  TH_TENSOR_APPLY(real, self, *self_data = (real)(THRandom_random(_generator) % ((1ULL << 11)+1)););
 #else
 #error "Unknown type"
 #endif
@@ -53,7 +55,7 @@ void THTensor_(bernoulli_DoubleTensor)(THTensor *self, THGenerator *_generator, 
   TH_TENSOR_APPLY2(real, self, double, p, *self_data = (real)THRandom_bernoulli(_generator, (double)*p_data););
 }
 
-#if defined(TH_REAL_IS_FLOAT) || defined(TH_REAL_IS_DOUBLE)
+#if defined(TH_REAL_IS_FLOATING)
 
 void THTensor_(uniform)(THTensor *self, THGenerator *_generator, double a, double b)
 {

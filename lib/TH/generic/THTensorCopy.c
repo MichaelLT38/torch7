@@ -112,13 +112,13 @@ void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src
 #define IMPLEMENT_THTensor_COPY_TO_HALF(TYPENAMESRC, TYPE_SRC) \
 void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src) \
 { \
- TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = TH_float2half((float)*src_data);) \
+ TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
 }
 
 #define IMPLEMENT_THTensor_COPY_FROM_HALF(TYPENAMESRC, TYPE_SRC) \
 void THTensor_(copy##TYPENAMESRC)(THTensor *tensor, TH##TYPENAMESRC##Tensor *src) \
 { \
- TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)TH_half2float(*src_data);) \
+ TH_TENSOR_APPLY2(real, tensor, TYPE_SRC, src, *tensor_data = (real)(*src_data);) \
 }
 
 #define IMPLEMENT_THTensor_COPY_TO_FROM_HALF(TYPENAMESRC, TYPE_SRC) \
@@ -135,7 +135,20 @@ IMPLEMENT_THTensor_COPY(Int, int)
 IMPLEMENT_THTensor_COPY(Long, int64_t)
 IMPLEMENT_THTensor_COPY(Float, float)
 IMPLEMENT_THTensor_COPY(Double, double)
+#if defined(TH_REAL_IS_FLOAT)
+/* contiguous half -> float: bulk F16C conversion */
+void THTensor_(copyHalf)(THTensor *tensor, THHalfTensor *src)
+{
+  ptrdiff_t n = THTensor_(nElement)(tensor);
+  if (THTensor_(isContiguous)(tensor) && THHalfTensor_isContiguous(src) && n == THHalfTensor_nElement(src)) {
+    TH_halfToFloatN(THTensor_(data)(tensor), THHalfTensor_data(src), n);
+    return;
+  }
+  TH_TENSOR_APPLY2(real, tensor, THHalf, src, *tensor_data = (real)(*src_data);)
+}
+#else
 IMPLEMENT_THTensor_COPY_FROM_HALF(Half, THHalf)
+#endif
 #else
 /* only allow pass-through for Half */
 IMPLEMENT_THTensor_COPY_TO_FROM_HALF(Half, THHalf)
@@ -144,7 +157,16 @@ IMPLEMENT_THTensor_COPY_TO_HALF(Char, char)
 IMPLEMENT_THTensor_COPY_TO_HALF(Short, short)
 IMPLEMENT_THTensor_COPY_TO_HALF(Int, int)
 IMPLEMENT_THTensor_COPY_TO_HALF(Long, int64_t)
-IMPLEMENT_THTensor_COPY_TO_HALF(Float, float)
+/* contiguous float -> half: bulk F16C conversion */
+void THTensor_(copyFloat)(THTensor *tensor, THFloatTensor *src)
+{
+  ptrdiff_t n = THTensor_(nElement)(tensor);
+  if (THTensor_(isContiguous)(tensor) && THFloatTensor_isContiguous(src) && n == THFloatTensor_nElement(src)) {
+    TH_floatToHalfN(THTensor_(data)(tensor), THFloatTensor_data(src), n);
+    return;
+  }
+  TH_TENSOR_APPLY2(real, tensor, float, src, *tensor_data = (real)(*src_data);)
+}
 IMPLEMENT_THTensor_COPY_TO_HALF(Double, double)
 
 #endif /* REAL_IS_HALF */
